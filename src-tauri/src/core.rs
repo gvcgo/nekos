@@ -93,10 +93,6 @@ impl CoreCtl {
         PathBuf::from("nekos-core")
     }
 
-    pub fn binary(&self) -> &std::path::Path {
-        &self.bin
-    }
-
     fn run(&self, args: &[&str], stdin: &[u8]) -> Result<Vec<u8>, String> {
         let mut child = Command::new(&self.bin)
             .args(args)
