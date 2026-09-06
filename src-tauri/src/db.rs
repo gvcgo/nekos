@@ -26,6 +26,16 @@ pub struct Group {
     /// unix seconds of the last successful fetch/refresh.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_update_epoch: Option<i64>,
+    /// normal | strategy (auto urltest) | strategy-manual
+    #[serde(default = "default_normal_kind")]
+    pub kind: String,
+    /// JSON array of member group ids — strategy groups only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub members: Option<String>,
+}
+
+fn default_normal_kind() -> String {
+    "normal".into()
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -161,6 +171,8 @@ impl Db {
         self.ensure_column("groups", "user_agent", "TEXT")?;
         self.ensure_column("groups", "extra_headers", "TEXT")?;
         self.ensure_column("groups", "last_update_epoch", "INTEGER")?;
+        self.ensure_column("groups", "kind", "TEXT")?;
+        self.ensure_column("groups", "members", "TEXT")?; // JSON array of group ids (strategy groups)
         Ok(())
     }
 
@@ -182,7 +194,7 @@ impl Db {
     pub fn list_groups(&self) -> rusqlite::Result<Vec<Group>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, sub_url, user_agent, extra_headers, sub_userinfo, updated_at,
-                    last_update_epoch
+                    last_update_epoch, kind, members
              FROM groups ORDER BY id",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -195,6 +207,8 @@ impl Db {
                 sub_userinfo: row.get(5)?,
                 updated_at: row.get(6)?,
                 last_update_epoch: row.get(7)?,
+                kind: row.get::<_, Option<String>>(8)?.unwrap_or_else(|| "normal".into()),
+                members: row.get(9)?,
             })
         })?;
         rows.collect()
@@ -208,10 +222,52 @@ impl Db {
         Ok(self.conn.last_insert_rowid())
     }
 
-    pub fn rename_group(&self, id: i64, name: &str) -> rusqlite::Result<()> {
-        if id == 1 {
-            return Ok(()); // keep the default group named as-is
+    // ---- strategy groups (member groups merged as one virtual node set) ----
+
+    pub fn is_strategy(&self, id: i64) -> rusqlite::Result<bool> {
+        let kind = self.group(id)?.map(|g| g.kind).unwrap_or_default();
+        Ok(kind.starts_with("strategy"))
+    }
+
+    pub fn member_ids(&self, id: i64) -> rusqlite::Result<Vec<i64>> {
+        let members = self.group(id)?.and_then(|g| g.members);
+        let Some(json) = members else { return Ok(vec![]) };
+        serde_json::from_str(&json)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+    }
+
+    /// Nodes of a normal group, or the de-duplicated union of a strategy
+    /// group's member groups (first occurrence wins).
+    pub fn nodes_for_group(&self, id: i64) -> rusqlite::Result<Vec<Node>> {
+        if !self.is_strategy(id)? {
+            return self.list_nodes(id);
         }
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for member in self.member_ids(id)? {
+            for n in self.list_nodes(member)? {
+                if seen.insert(n.id.clone()) {
+                    out.push(n);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn create_strategy(
+        &self,
+        name: &str,
+        kind: &str,
+        members_json: &str,
+    ) -> rusqlite::Result<i64> {
+        self.conn.execute(
+            "INSERT INTO groups (name, kind, members) VALUES (?1, ?2, ?3)",
+            params![name, kind, members_json],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn rename_group(&self, id: i64, name: &str) -> rusqlite::Result<()> {
         self.conn.execute(
             "UPDATE groups SET name = ?2 WHERE id = ?1",
             params![id, name],
@@ -236,7 +292,7 @@ impl Db {
         self.conn
             .query_row(
                 "SELECT id, name, sub_url, user_agent, extra_headers, sub_userinfo, updated_at,
-                        last_update_epoch
+                        last_update_epoch, kind, members
                  FROM groups WHERE id = ?1",
                 params![id],
                 |row| {
@@ -249,6 +305,8 @@ impl Db {
                         sub_userinfo: row.get(5)?,
                         updated_at: row.get(6)?,
                         last_update_epoch: row.get(7)?,
+                        kind: row.get::<_, Option<String>>(8)?.unwrap_or_else(|| "normal".into()),
+                        members: row.get(9)?,
                     })
                 },
             )
@@ -360,6 +418,19 @@ impl Db {
         }
         tx.commit()?;
         Ok(inserted)
+    }
+
+    /// Successful delay (ms) for a node in a group, if any.
+    pub fn latency_delay(&self, group_id: i64, node_id: &str) -> rusqlite::Result<Option<i64>> {
+        let delay: Option<Option<i64>> = self
+            .conn
+            .query_row(
+                "SELECT delay_ms FROM latency WHERE group_id = ?1 AND node_id = ?2",
+                params![group_id, node_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(delay.flatten())
     }
 
     pub fn upsert_latency(
@@ -531,6 +602,29 @@ mod tests {
         // deleting the node removes its latency row
         db.delete_node(1, "node-a").unwrap();
         assert_eq!(db.list_latency(1).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn strategy_union_nodes() {
+        let db = open_tmp();
+        let a = db.create_group("组A", None).unwrap();
+        let b = db.create_group("组B", None).unwrap();
+        let n1 = NewNode { id: "x1".into(), r#type: "anytls".into(), remark: "一".into(), out: "{}".into() };
+        let n2 = NewNode { id: "x2".into(), r#type: "trojan".into(), remark: "二".into(), out: "{}".into() };
+        let n1b = NewNode { id: "x1".into(), r#type: "anytls".into(), remark: "一改".into(), out: "{}".into() };
+        db.upsert_nodes(a, &[n1]).unwrap();
+        db.upsert_nodes(b, &[n1b, n2]).unwrap();
+        let s = db.create_strategy("策略", "strategy", &format!("[{a},{b}]")).unwrap();
+        assert!(db.is_strategy(s).unwrap());
+        let union = db.nodes_for_group(s).unwrap();
+        assert_eq!(union.len(), 2, "dedupe by id across members");
+        let ids: Vec<String> = union.iter().map(|n| n.id.clone()).collect();
+        assert!(ids.contains(&"x1".into()) && ids.contains(&"x2".into()));
+        // normal group unchanged
+        assert_eq!(db.nodes_for_group(a).unwrap().len(), 1);
+        // empty members degrade to empty
+        let s2 = db.create_strategy("空", "strategy", "[]").unwrap();
+        assert!(db.nodes_for_group(s2).unwrap().is_empty());
     }
 
     #[test]

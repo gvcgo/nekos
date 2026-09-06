@@ -68,6 +68,10 @@ export interface Group {
   sub_userinfo?: string;
   updated_at?: string;
   last_update_epoch?: number;
+  /** normal | strategy (auto urltest) | strategy-manual */
+  kind?: string;
+  /** member group ids (strategy groups) */
+  members?: string;
 }
 
 export function subscriptionEdit(
@@ -105,6 +109,15 @@ export function groupsList(): Promise<Group[]> {
 
 export function createGroup(name: string, subUrl?: string): Promise<Group> {
   return invoke<Group>("create_group", { name, subUrl });
+}
+
+/** v2rayN-style strategy group over member groups (auto = urltest pick). */
+export function createStrategyGroup(
+  name: string,
+  auto: boolean,
+  memberGroupIds: number[],
+): Promise<Group> {
+  return invoke<Group>("create_strategy_group", { name, auto, memberGroupIds });
 }
 
 export function deleteGroup(groupId: number): Promise<void> {

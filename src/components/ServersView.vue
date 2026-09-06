@@ -6,6 +6,7 @@ import {
   coreStop,
   coreStart,
   createGroup,
+  createStrategyGroup,
   deleteGroup,
   deleteNode,
   groupsList,
@@ -169,6 +170,55 @@ function currentGroup(): Group {
   return groups.value.find((g) => g.id === currentGroupId()) ?? groups.value[0];
 }
 
+const isVirtualCurrent = computed(() => (currentGroup()?.kind ?? "normal") !== "normal");
+
+function kindTag(g: Group): string {
+  if (g.kind === "strategy") return "⚡"; // auto urltest
+  if (g.kind === "strategy-manual") return "◈";
+  return "";
+}
+
+// ---- create strategy group ----
+
+const stratOpen = ref(false);
+const stratName = ref("");
+const stratAuto = ref(true);
+const stratMembers = ref<Record<number, boolean>>({});
+const stratBusy = ref(false);
+
+const normalGroups = computed(() =>
+  groups.value.filter((g) => (g.kind ?? "normal") === "normal"),
+);
+
+function openStrategyDialog() {
+  stratName.value = "";
+  stratAuto.value = true;
+  const m: Record<number, boolean> = {};
+  for (const g of normalGroups.value) m[g.id] = true;
+  stratMembers.value = m;
+  stratOpen.value = true;
+}
+
+async function createStrategy() {
+  stratBusy.value = true;
+  err.value = "";
+  try {
+    const ids = normalGroups.value.filter((g) => stratMembers.value[g.id]).map((g) => g.id);
+    if (!stratName.value.trim() || !ids.length) {
+      err.value = "请填写名称并选择至少一个成员分组";
+      return;
+    }
+    const g = await createStrategyGroup(stratName.value.trim(), stratAuto.value, ids);
+    stratOpen.value = false;
+    await loadAll();
+    if (g.id) await switchGroup(g.id);
+  } catch (e) {
+    err.value = String(e);
+  } finally {
+    stratBusy.value = false;
+  }
+}
+
 async function removeGroup() {
   const gid = currentGroupId();
   if (gid === 1) return;
@@ -230,11 +280,11 @@ async function copyQrLink() {
   shareMsg.value = ok ? "链接已复制到剪贴板" : "复制失败";
 }
 
-async function copyNodeLink(nodeId: string, remark: string) {
+async function copyNodeLink(groupId: number, nodeId: string, remark: string) {
   shareMsg.value = "";
   err.value = "";
   try {
-    const link = await nodeEncode(currentGroupId(), nodeId);
+    const link = await nodeEncode(groupId, nodeId);
     const ok = await copyText(link);
     shareMsg.value = ok ? `已复制「${remark}」链接` : "复制失败（请使用 QR 弹窗内手动复制）";
   } catch (e) {
@@ -242,13 +292,13 @@ async function copyNodeLink(nodeId: string, remark: string) {
   }
 }
 
-async function showNodeQr(nodeId: string, remark: string) {
+async function showNodeQr(groupId: number, nodeId: string, remark: string) {
   qrBusy.value = true;
   err.value = "";
   qrModal.value = null;
   try {
-    const link = await nodeEncode(currentGroupId(), nodeId);
-    const dataUrl = await nodeQr(currentGroupId(), nodeId);
+    const link = await nodeEncode(groupId, nodeId);
+    const dataUrl = await nodeQr(groupId, nodeId);
     qrModal.value = { remark, link, dataUrl };
   } catch (e) {
     err.value = String(e);
@@ -351,10 +401,11 @@ onMounted(loadAll);
       <h1>服务</h1>
 
       <select class="group-select" :value="currentGroupId()" @change="switchGroup(Number(($event.target as HTMLSelectElement).value))">
-        <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}</option>
+        <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}<template v-if="kindTag(g)">&nbsp;{{ kindTag(g) }}</template></option>
       </select>
       <span class="group-ops" title="管理分组">
         <button class="ghost mini" @click="newGroup">＋ 新建</button>
+        <button class="ghost mini" title="按成员分组延迟自动选最快的组（v2rayN 策略组）" @click="openStrategyDialog">＋策略组</button>
         <button v-if="currentGroupId() !== 1" class="ghost mini" @click="renameCurrentGroup">✎ 改名</button>
         <button v-if="currentGroupId() !== 1" class="ghost mini danger" title="删除分组（含节点）" @click="removeGroup">✕ 删除</button>
       </span>
@@ -385,7 +436,7 @@ onMounted(loadAll);
       <span v-if="err" class="err">{{ err }}</span>
     </div>
 
-    <section class="import-card">
+    <section v-if="!isVirtualCurrent" class="import-card">
       <div class="row">
         <textarea v-model="importText" rows="2" placeholder="粘贴分享链接 / 订阅内容（base64、Clash、JSON），导入到当前分组" />
         <button :disabled="importBusy || !importText.trim()" @click="doImport">{{ importBusy ? "导入中…" : "导入到当前分组" }}</button>
@@ -420,9 +471,9 @@ onMounted(loadAll);
             <td :class="delayMap[n.id]?.error ? 'bad' : ''">{{ delayText(n) }}</td>
             <td class="ops">
               <button class="ghost" :disabled="!!delayMap[n.id] && delayMap[n.id]!.delay_ms == null && !delayMap[n.id]!.error" @click="testNode(n.id)">测速</button>
-              <button class="ghost" :disabled="qrBusy" title="复制分享链接" @click="copyNodeLink(n.id, n.remark)">复制</button>
-              <button class="ghost" title="二维码分享" @click="showNodeQr(n.id, n.remark)">QR</button>
-              <button class="ghost danger" @click="removeNode(n.id)">删除</button>
+              <button class="ghost" :disabled="qrBusy" title="复制分享链接" @click="copyNodeLink(n.group_id, n.id, n.remark)">复制</button>
+              <button class="ghost" title="二维码分享" @click="showNodeQr(n.group_id, n.id, n.remark)">QR</button>
+              <button v-if="!isVirtualCurrent" class="ghost danger" @click="removeNode(n.id)">删除</button>
             </td>
           </tr>
         </tbody>
@@ -430,6 +481,27 @@ onMounted(loadAll);
       <div v-if="!nodes.length" class="empty">当前分组没有节点 — 在上方粘贴导入，或在「订阅」页抓取保存。</div>
       <div v-else-if="!visibleNodes.length" class="empty">该组节点全部为 IPv6（已按设置过滤）— 可在「设置」关闭过滤。</div>
     </section>
+
+    <!-- create strategy group -->
+    <div v-if="stratOpen" class="dialog-mask" @click.self="stratOpen = false">
+      <div class="dialog">
+        <h3>新建策略组（成员分组自动选优）</h3>
+        <div class="dialog-row"><label>名称</label><input v-model="stratName" class="inp" placeholder="如 自动选优" /></div>
+        <label class="check" style="align-self: flex-start"><input v-model="stratAuto" type="checkbox" /> 自动（启动时测速缺失的成员，选最快节点）</label>
+        <div class="node-pick">
+          <label v-for="g in normalGroups" :key="g.id" class="pick">
+            <input type="checkbox" v-model="stratMembers[g.id]" /> {{ g.name }}
+          </label>
+          <div v-if="!normalGroups.length" class="dim">没有可选成员分组</div>
+        </div>
+        <div class="dialog-btns">
+          <span v-if="err" class="err">{{ err }}</span>
+          <span class="spacer"></span>
+          <button class="ghost" @click="stratOpen = false">取消</button>
+          <button :disabled="stratBusy" @click="createStrategy">{{ stratBusy ? "创建中…" : "创建" }}</button>
+        </div>
+      </div>
+    </div>
 
     <!-- QR share dialog -->
     <div v-if="qrModal" class="dialog-mask" @click.self="qrModal = null">

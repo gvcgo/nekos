@@ -116,7 +116,7 @@ impl AppState {
     ) -> Result<(String, String), String> {
         let settings = self.settings();
         let db = self.db.lock().map_err(|_| "db lock poisoned".to_string())?;
-        let nodes = db.list_nodes(group_id).map_err(|e| format!("db: {e}"))?;
+        let nodes = db.nodes_for_group(group_id).map_err(|e| format!("db: {e}"))?;
         if nodes.is_empty() {
             return Err("当前分组没有节点".into());
         }
@@ -269,7 +269,7 @@ async fn groups_list(state: State<'_, AppState>) -> Result<Vec<db::Group>, Strin
 #[tauri::command]
 async fn nodes_list(state: State<'_, AppState>, group_id: i64) -> Result<Vec<db::Node>, String> {
     with_db(&state, |db| {
-        db.list_nodes(group_id).map_err(|e| e.to_string())
+        db.nodes_for_group(group_id).map_err(|e| e.to_string())
     })
 }
 
@@ -310,6 +310,39 @@ async fn import_to_group(
         .map_err(|e| e.to_string())??;
     }
     Ok(ImportResult { nodes: kept, errors: parsed.errors })
+}
+
+/// Create a strategy group (v2rayN policy group) over member groups.
+/// auto=true measures members on start and pins the fastest node.
+#[tauri::command]
+async fn create_strategy_group(
+    state: State<'_, AppState>,
+    name: String,
+    auto: bool,
+    member_group_ids: Vec<i64>,
+) -> Result<db::Group, String> {
+    if name.trim().is_empty() {
+        return Err("名称不能为空".into());
+    }
+    if member_group_ids.is_empty() {
+        return Err("至少选择一个成员分组".into());
+    }
+    let kind = if auto { "strategy" } else { "strategy-manual" }.to_string();
+    let members_json =
+        serde_json::to_string(&member_group_ids).map_err(|e| e.to_string())?;
+    let db = state.db.clone();
+    let gid = tauri::async_runtime::spawn_blocking(move || {
+        let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+        db.create_strategy(name.trim(), &kind, &members_json)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    with_db(&state, |db| {
+        db.group(gid)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "分组消失".to_string())
+    })
 }
 
 #[tauri::command]
@@ -491,54 +524,106 @@ pub struct BatchRow {
     pub error: Option<String>,
 }
 
-/// Build the urltest session for a node subset of a group and probe it in
-/// one sing-box instance (v2rayN semantics: concurrent, HTTP 204).
-fn run_urltest(
+/// (id, outbound JSON, owning group id) — for strategy groups the owning
+/// group is where latency results are stored.
+type EntryOwned = (String, serde_json::Value, i64);
+
+/// Resolve a group's node entries: plain list for normal groups, the
+/// de-duplicated union of member groups for strategy groups.
+fn resolve_entries(
     db: &Mutex<Db>,
-    ctl: &CoreCtl,
     group_id: i64,
     ids: Option<&[String]>,
     filter_v6: bool,
-) -> Result<Vec<core::UrlTestRow>, String> {
-    let pairs = {
-        let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
-        let nodes = db.list_nodes(group_id).map_err(|e| format!("db: {e}"))?;
-        let selected: Vec<(String, serde_json::Value)> = nodes
-            .iter()
-            .filter(|n| ids.map(|ids| ids.contains(&n.id)).unwrap_or(true))
-            .filter_map(|n| {
-                let out: serde_json::Value = serde_json::from_str(&n.out).ok()?;
-                if filter_v6 && is_ipv6_server(&out) {
-                    return None;
-                }
-                Some((n.id.clone(), out))
-            })
-            .collect();
-        if selected.is_empty() {
-            return Err("没有可测速的节点".into());
-        }
-        selected
-    };
-    let entries: Vec<serde_json::Value> = pairs
-        .into_iter()
-        .map(|(id, out)| serde_json::json!({ "id": id, "out": out }))
+) -> Result<Vec<EntryOwned>, String> {
+    let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+    let nodes = db.nodes_for_group(group_id).map_err(|e| format!("db: {e}"))?;
+    let entries: Vec<EntryOwned> = nodes
+        .iter()
+        .filter(|n| ids.map(|ids| ids.contains(&n.id)).unwrap_or(true))
+        .filter_map(|n| {
+            let out: serde_json::Value = serde_json::from_str(&n.out).ok()?;
+            if filter_v6 && is_ipv6_server(&out) {
+                return None;
+            }
+            Some((n.id.clone(), out, n.group_id))
+        })
         .collect();
-    let session = serde_json::json!({ "entries": entries, "timeout_s": 5 }).to_string();
-    ctl.urltest(&session)
+    if entries.is_empty() {
+        return Err("没有可测速的节点".into());
+    }
+    Ok(entries)
 }
 
-fn persist_rows(db: &Mutex<Db>, group_id: i64, rows: &[core::UrlTestRow]) {
+fn entries_session(entries: &[EntryOwned]) -> String {
+    let items: Vec<serde_json::Value> = entries
+        .iter()
+        .map(|(id, out, _)| serde_json::json!({ "id": id, "out": out }))
+        .collect();
+    serde_json::json!({ "entries": items, "timeout_s": 5 }).to_string()
+}
+
+/// Probe entries in one core instance; persist results under each node's
+/// owning group.
+fn probe_and_persist(
+    db: &Mutex<Db>,
+    ctl: &CoreCtl,
+    entries: &[EntryOwned],
+) -> Result<Vec<core::UrlTestRow>, String> {
+    let rows = ctl.urltest(&entries_session(entries))?;
+    let owner: std::collections::HashMap<&str, i64> =
+        entries.iter().map(|(id, _, g)| (id.as_str(), *g)).collect();
     if let Ok(db) = db.lock() {
-        for r in rows {
-            let _ = db.upsert_latency(
-                group_id,
-                &r.id,
-                r.delay_ms,
-                r.error.as_deref(),
-                &unix_now_secs(),
-            );
+        for r in &rows {
+            if let Some(g) = owner.get(r.id.as_str()) {
+                let _ = db.upsert_latency(*g, &r.id, r.delay_ms, r.error.as_deref(), &unix_now_secs());
+            }
         }
     }
+    Ok(rows)
+}
+
+/// v2rayN policy-group semantics: for an AUTO strategy group, measure every
+/// member node that has no latency yet, then pin the fastest node as the
+/// group's selection before the core starts.
+fn autoselect_strategy(db: &Mutex<Db>, ctl: &CoreCtl, group_id: i64) -> Result<(), String> {
+    let entries = resolve_entries(db, group_id, None, false)?;
+    let delays: std::collections::HashMap<String, Option<i64>> = {
+        let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+        let mut m = std::collections::HashMap::new();
+        for (id, _, owner) in &entries {
+            m.insert(id.clone(), db.latency_delay(*owner, id).map_err(|e| e.to_string())?);
+        }
+        m
+    };
+    let missing: Vec<EntryOwned> = entries
+        .iter()
+        .filter(|(id, _, _)| delays.get(id).copied().flatten().is_none())
+        .cloned()
+        .collect();
+    if !missing.is_empty() {
+        // failures still persist as error rows; never block startup
+        let _ = probe_and_persist(db, ctl, &missing);
+    }
+    // pin the fastest known node
+    let mut best: Option<(i64, &str)> = None;
+    for (id, _, owner) in &entries {
+        let d = {
+            let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+            db.latency_delay(*owner, id).map_err(|e| e.to_string())?
+        };
+        if let Some(d) = d {
+            if best.map(|(bd, _)| d < bd).unwrap_or(true) {
+                best = Some((d, id.as_str()));
+            }
+        }
+    }
+    let chosen = best.map(|(_, id)| id.to_string())
+        .unwrap_or_else(|| entries[0].0.clone());
+    let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+    let mut s = db.load_settings();
+    s.selected_by_group.insert(group_id, chosen);
+    db.save_settings(&s).map_err(|e| e.to_string())
 }
 
 /// Measure one node (single-entry batch, same engine as batch testing).
@@ -551,18 +636,17 @@ async fn measure_node(
     let db = state.db.clone();
     let ctl = state.ctl.clone();
     let ids = vec![node_id.clone()];
-    let rows = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<core::UrlTestRow>, String> {
-        let rows = run_urltest(&db, &ctl, group_id, Some(&ids), false)?;
-        persist_rows(&db, group_id, &rows);
-        Ok(rows)
+    let row = tauri::async_runtime::spawn_blocking(move || -> Result<core::UrlTestRow, String> {
+        let entries = resolve_entries(&db, group_id, Some(&ids), false)?;
+        let rows = probe_and_persist(&db, &ctl, &entries)?;
+        Ok(rows.into_iter().next().unwrap_or(core::UrlTestRow {
+            id: node_id,
+            delay_ms: None,
+            error: Some("没有返回结果".into()),
+        }))
     })
     .await
     .map_err(|e| e.to_string())??;
-    let row = rows.into_iter().next().unwrap_or(core::UrlTestRow {
-        id: node_id,
-        delay_ms: None,
-        error: Some("没有返回结果".into()),
-    });
     Ok(MeasureView { delay_ms: row.delay_ms, error: row.error })
 }
 
@@ -576,9 +660,8 @@ async fn measure_batch(
     let ctl = state.ctl.clone();
     let filter_v6 = state.settings().filter_ipv6;
     let rows = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<core::UrlTestRow>, String> {
-        let rows = run_urltest(&db, &ctl, group_id, None, filter_v6)?;
-        persist_rows(&db, group_id, &rows);
-        Ok(rows)
+        let entries = resolve_entries(&db, group_id, None, filter_v6)?;
+        probe_and_persist(&db, &ctl, &entries)
     })
     .await
     .map_err(|e| e.to_string())??;
@@ -668,13 +751,30 @@ async fn node_qr(
     Ok(format!("data:image/png;base64,{b64}"))
 }
 
-/// Persisted latency results for a group (shown until re-tested).
+/// Persisted latency results for a group (strategy groups aggregate their
+/// member groups' rows). Shown until re-tested.
 #[tauri::command]
 async fn latency_list(
     state: State<'_, AppState>,
     group_id: i64,
 ) -> Result<Vec<db::LatencyRow>, String> {
-    with_db(&state, |db| db.list_latency(group_id).map_err(|e| e.to_string()))
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+        let nodes = db.nodes_for_group(group_id).map_err(|e| e.to_string())?;
+        let mut owners: Vec<i64> = nodes.iter().map(|n| n.group_id).collect();
+        owners.sort_unstable();
+        owners.dedup();
+        let mut rows = Vec::new();
+        for owner in owners {
+            for row in db.list_latency(owner).map_err(|e| e.to_string())? {
+                rows.push(row);
+            }
+        }
+        Ok(rows)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 // ---- subscription management --------------------------------------------
@@ -988,6 +1088,22 @@ fn core_status_raw(state: &AppState) -> CoreStatusView {
 async fn core_start(state: State<'_, AppState>) -> Result<RunResult, String> {
     let settings = state.settings();
     let group_id = settings.current_group_id;
+    let is_auto_strategy = {
+        let db = state.db.lock().map_err(|_| "db lock poisoned".to_string())?;
+        db.group(group_id)
+            .map_err(|e| e.to_string())?
+            .map(|g| g.kind == "strategy")
+            .unwrap_or(false)
+    };
+    if is_auto_strategy {
+        let db = state.db.clone();
+        let ctl = state.ctl.clone();
+        // v2rayN policy-group: measure members without latency, pin fastest
+        let _ = tauri::async_runtime::spawn_blocking(move || autoselect_strategy(&db, &ctl, group_id))
+            .await
+            .map_err(|e| e.to_string())
+            .and_then(|r| r);
+    }
     let rule_assets = if settings.mode == "rule" {
         Some(state.ensure_rule_assets().await?)
     } else {
@@ -1239,6 +1355,7 @@ pub fn run() {
             nodes_list,
             import_to_group,
             create_group,
+            create_strategy_group,
             rename_group,
             delete_group,
             delete_node,
