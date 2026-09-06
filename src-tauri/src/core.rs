@@ -161,27 +161,6 @@ impl CoreCtl {
         &self.bin
     }
 
-    /// `nekos-core test`: measure TCP/HTTP latency through the given
-    /// session's selected node. Returns delay in milliseconds on success.
-    pub fn core_test(
-        &self,
-        session_json: &str,
-        target: &str,
-        timeout_s: f64,
-    ) -> Result<i64, String> {
-        let secs = format!("{timeout_s}");
-        let out = self.run(
-            &["test", "-target", target, "-timeout", &secs],
-            session_json.as_bytes(),
-        )?;
-        let value: serde_json::Value =
-            serde_json::from_slice(&out).map_err(|e| format!("core test output: {e}"))?;
-        value
-            .get("delay_ms")
-            .and_then(|v| v.as_i64())
-            .ok_or_else(|| format!("core test: no delay_ms in {value}"))
-    }
-
     /// `nekos-core urltest`: batch-probe every entry in one instance
     /// (v2rayN semantics). Returns rows in entry order.
     pub fn urltest(&self, session_json: &str) -> Result<Vec<UrlTestRow>, String> {
