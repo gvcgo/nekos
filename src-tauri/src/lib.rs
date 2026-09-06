@@ -399,7 +399,7 @@ struct SettingsPatch {
     sort_by_delay: Option<bool>,
     filter_ipv6: Option<bool>,
     auto_update_subscriptions: Option<bool>,
-    auto_update_hours: Option<u32>,
+    auto_update_minutes: Option<u32>,
 }
 
 #[tauri::command]
@@ -438,8 +438,8 @@ async fn settings_set(
         if let Some(v) = patch.auto_update_subscriptions {
             s.auto_update_subscriptions = v;
         }
-        if let Some(v) = patch.auto_update_hours {
-            s.auto_update_hours = v.max(1);
+        if let Some(v) = patch.auto_update_minutes {
+            s.auto_update_minutes = v.clamp(5, 60 * 24 * 7);
         }
         db.save_settings(&s).map_err(|e| e.to_string())?;
         Ok(s)
@@ -888,7 +888,7 @@ async fn auto_update_loop(state: AppState) {
         if !settings.auto_update_subscriptions {
             continue;
         }
-        let interval_secs = u64::from(settings.auto_update_hours.max(1)) * 3600;
+        let interval_secs = u64::from(settings.auto_update_minutes.max(5)) * 60;
         let now = unix_now();
         let due: Vec<i64> = {
             let db = match state.db.lock() {

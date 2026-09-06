@@ -19,7 +19,16 @@ const logLevel = ref("warn");
 const closeToTray = ref(true);
 const filterIpv6 = ref(false);
 const autoUpdate = ref(false);
-const autoHours = ref(6);
+const autoMinutes = ref(360);
+const minuteOptions = [
+  { m: 15, label: "15 分钟" },
+  { m: 30, label: "30 分钟" },
+  { m: 60, label: "1 小时" },
+  { m: 180, label: "3 小时" },
+  { m: 360, label: "6 小时" },
+  { m: 720, label: "12 小时" },
+  { m: 1440, label: "24 小时" },
+];
 
 onMounted(async () => {
   try {
@@ -30,7 +39,7 @@ onMounted(async () => {
     closeToTray.value = settings.value.close_to_tray;
     filterIpv6.value = settings.value.filter_ipv6 ?? false;
     autoUpdate.value = settings.value.auto_update_subscriptions ?? false;
-    autoHours.value = settings.value.auto_update_hours ?? 6;
+    autoMinutes.value = settings.value.auto_update_minutes ?? 360;
     version.value = await coreVersion();
   } catch (e) {
     err.value = String(e);
@@ -41,17 +50,19 @@ async function toggleAutoUpdate(on: boolean) {
   try {
     settings.value = await settingsSet({ auto_update_subscriptions: on });
     autoUpdate.value = on;
-    savedMsg.value = on ? "自动更新已开启" : "自动更新已关闭";
+    savedMsg.value = on
+      ? "自动更新已开启：应用运行期间后台定时抓取"
+      : "自动更新已关闭";
   } catch (e) {
     err.value = String(e);
   }
 }
 
-async function setAutoHours(hours: number) {
+async function setAutoMinutes(minutes: number) {
   try {
-    settings.value = await settingsSet({ auto_update_hours: hours });
-    autoHours.value = hours;
-    savedMsg.value = `更新间隔设为 ${hours} 小时`;
+    settings.value = await settingsSet({ auto_update_minutes: minutes });
+    autoMinutes.value = minutes;
+    savedMsg.value = `更新间隔设为 ${minutes} 分钟`;
   } catch (e) {
     err.value = String(e);
   }
@@ -129,8 +140,8 @@ async function save() {
       </label>
       <div v-if="autoUpdate" class="auto-row">
         <label>更新间隔</label>
-        <select :value="autoHours" class="field sel-sm" @change="setAutoHours(Number(($event.target as HTMLSelectElement).value))">
-          <option v-for="h in [1, 3, 6, 12, 24]" :key="h" :value="h">{{ h }} 小时</option>
+        <select :value="autoMinutes" class="field sel-sm" @change="setAutoMinutes(Number(($event.target as HTMLSelectElement).value))">
+          <option v-for="opt in minuteOptions" :key="opt.m" :value="opt.m">{{ opt.label }}</option>
         </select>
       </div>
       <p class="note">系统代理独立开关在「服务」页工具栏：内核运行中可随时开启/关闭，退出自动还原。</p>

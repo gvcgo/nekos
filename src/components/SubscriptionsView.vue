@@ -6,6 +6,7 @@ import {
   deleteGroup,
   groupsList,
   nodesList,
+  settingsGet,
   subscribe,
   subscriptionEdit,
   subscriptionRefresh,
@@ -32,6 +33,47 @@ const subscriptions = computed(() =>
 async function loadSubs() {
   subs.value = await groupsList();
   allGroups.value = subs.value;
+}
+
+// ---- auto-update visibility --------------------------------------------
+
+const autoEnabled = ref(false);
+const autoMinutes = ref(360);
+const refreshingAll = ref(false);
+
+onMounted(async () => {
+  await loadSubs();
+  try {
+    const s = await settingsGet();
+    autoEnabled.value = s.auto_update_subscriptions ?? false;
+    autoMinutes.value = s.auto_update_minutes ?? 360;
+  } catch {
+    /* non-fatal */
+  }
+});
+
+function autoInfo(g: Group): { due: boolean; next: number } | null {
+  if (!autoEnabled.value || g.last_update_epoch == null) return null;
+  const next = (g.last_update_epoch + autoMinutes.value * 60) * 1000;
+  return { due: Date.now() >= next, next };
+}
+
+async function refreshAll() {
+  refreshingAll.value = true;
+  err.value = "";
+  msg.value = "";
+  try {
+    for (const g of subscriptions.value) {
+      try {
+        await refreshSub(g);
+      } catch {
+        // refreshSub shows its own errors; keep going for the rest
+      }
+    }
+    msg.value = "全部订阅更新完成";
+  } finally {
+    refreshingAll.value = false;
+  }
 }
 
 // ---- copy subscription nodes into a group ----
@@ -383,7 +425,6 @@ async function doSaveNew() {
   }
 }
 
-onMounted(loadSubs);
 </script>
 
 <template>
@@ -391,7 +432,9 @@ onMounted(loadSubs);
     <div class="head">
       <h1>订阅</h1>
       <span class="hint">{{ subscriptions.length }} 个订阅组</span>
+      <button class="mini accent" @click="refreshAll" :disabled="refreshingAll">{{ refreshingAll ? "更新中…" : "全部更新" }}</button>
       <button class="mini accent" @click="openMulti">多订阅选节点入组…</button>
+      <span v-if="autoEnabled" class="hint">自动更新开（{{ autoMinutes }} 分钟）</span>
       <span class="spacer"></span>
       <span v-if="msg" class="ok">{{ msg }}</span>
       <span v-if="err" class="err">{{ err }}</span>
@@ -416,7 +459,14 @@ onMounted(loadSubs);
                 </template>
                 <span v-else class="dim">—</span>
               </td>
-              <td class="mono">{{ g.updated_at ?? "—" }}</td>
+              <td class="mono">
+                <div>{{ g.updated_at ?? "—" }}</div>
+                <template v-if="autoInfo(g)">
+                  <div v-if="autoInfo(g)!.due" class="auto-due">已到期，后台将自动更新</div>
+                  <div v-else class="auto-next">下次 {{ new Date(autoInfo(g)!.next).toLocaleTimeString() }}</div>
+                </template>
+                <div v-else-if="!g.updated_at" class="dim">从未更新过</div>
+              </td>
               <td class="ops">
                 <button class="ghost mini" @click="startEdit(g)">编辑</button>
                 <button class="ghost mini" @click="openCopy(g)">加入分组…</button>
@@ -579,6 +629,8 @@ th { font-size: 11px; text-transform: uppercase; opacity: 0.7; }
 .url { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mono { font-family: ui-monospace, monospace; font-size: 11px; }
 .dim { opacity: 0.5; }
+.auto-next { opacity: 0.6; font-size: 10px; margin-top: 2px; }
+.auto-due { color: #f59e0b; font-size: 10px; margin-top: 2px; }
 .ops { white-space: nowrap; text-align: right; }
 button {
   border: 0; border-radius: 6px; background: var(--accent); color: #fff;

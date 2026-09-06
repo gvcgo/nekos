@@ -67,6 +67,7 @@ export interface Group {
   extra_headers?: string;
   sub_userinfo?: string;
   updated_at?: string;
+  last_update_epoch?: number;
 }
 
 export function subscriptionEdit(
@@ -139,7 +140,7 @@ export interface Settings {
   sort_by_delay?: boolean;
   filter_ipv6?: boolean;
   auto_update_subscriptions?: boolean;
-  auto_update_hours?: number;
+  auto_update_minutes?: number;
   selected_by_group: Record<number, string>;
 }
 
@@ -153,7 +154,7 @@ export interface SettingsPatch {
   sort_by_delay?: boolean;
   filter_ipv6?: boolean;
   auto_update_subscriptions?: boolean;
-  auto_update_hours?: number;
+  auto_update_minutes?: number;
 }
 
 export function settingsGet(): Promise<Settings> {

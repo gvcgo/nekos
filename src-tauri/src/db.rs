@@ -58,8 +58,8 @@ fn default_false() -> bool {
     false
 }
 
-fn default_auto_hours() -> u32 {
-    6
+fn default_auto_minutes() -> u32 {
+    360 // 6h default
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -77,8 +77,9 @@ pub struct Settings {
     pub filter_ipv6: bool,
     #[serde(default = "default_false")]
     pub auto_update_subscriptions: bool,
-    #[serde(default = "default_auto_hours")]
-    pub auto_update_hours: u32,
+    /// interval in minutes between automatic subscription refreshes.
+    #[serde(default = "default_auto_minutes")]
+    pub auto_update_minutes: u32,
     pub selected_by_group: std::collections::HashMap<i64, String>,
 }
 
@@ -94,7 +95,7 @@ impl Default for Settings {
             sort_by_delay: true,
             filter_ipv6: false,
             auto_update_subscriptions: false,
-            auto_update_hours: default_auto_hours(),
+            auto_update_minutes: default_auto_minutes(),
             selected_by_group: Default::default(),
         }
     }
