@@ -1,0 +1,7 @@
+target/
+dist/
+node_modules/
+core/nekos-core
+core/bin/
+*.log
+.DS_Store
