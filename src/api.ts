@@ -148,6 +148,18 @@ export function measureNode(groupId: number, nodeId: string): Promise<MeasureVie
   return invoke<MeasureView>("measure_node", { groupId, nodeId });
 }
 
+export interface LatencyRow {
+  node_id: string;
+  delay_ms?: number | null;
+  error?: string | null;
+  tested_at: string;
+}
+
+/** Persisted latency results for a group (survive redraws/restarts). */
+export function latencyList(groupId: number): Promise<LatencyRow[]> {
+  return invoke<LatencyRow[]>("latency_list", { groupId });
+}
+
 export interface CoreStatusView {
   running: boolean;
   started_at?: string;

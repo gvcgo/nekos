@@ -425,6 +425,7 @@ async fn set_node_current(
 }
 
 /// Measure latency through one node (https URL probe, like the CLI test).
+/// The result is persisted so it survives page switches and restarts.
 #[tauri::command]
 async fn measure_node(
     state: State<'_, AppState>,
@@ -433,6 +434,7 @@ async fn measure_node(
 ) -> Result<MeasureView, String> {
     let db = state.db.clone();
     let ctl = state.ctl.clone();
+    let node_id2 = node_id.clone();
     let session = tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
         let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
         let node = db
@@ -451,22 +453,49 @@ async fn measure_node(
     .await
     .map_err(|e| e.to_string())??;
 
-    let delay = tauri::async_runtime::spawn_blocking(move || {
-        ctl.core_test(&session, "https://www.google.com/generate_204", 8.0)
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let view = match ctl.core_test(&session, "https://www.google.com/generate_204", 8.0) {
+            Ok(ms) => MeasureView {
+                delay_ms: Some(ms),
+                error: None,
+            },
+            Err(msg) => MeasureView {
+                delay_ms: None,
+                error: Some(msg),
+            },
+        };
+        // persist so results survive redraws / restarts
+        if let Ok(db) = db.lock() {
+            let _ = db.upsert_latency(
+                group_id,
+                &node_id2,
+                view.delay_ms,
+                view.error.as_deref(),
+                &unix_now_secs(),
+            );
+        }
+        view
     })
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string())
+}
 
-    match delay {
-        Ok(ms) => Ok(MeasureView {
-            delay_ms: Some(ms),
-            error: None,
-        }),
-        Err(msg) => Ok(MeasureView {
-            delay_ms: None,
-            error: Some(msg),
-        }),
-    }
+/// Persisted latency results for a group (shown until re-tested).
+#[tauri::command]
+async fn latency_list(
+    state: State<'_, AppState>,
+    group_id: i64,
+) -> Result<Vec<db::LatencyRow>, String> {
+    with_db(&state, |db| db.list_latency(group_id).map_err(|e| e.to_string()))
+}
+
+fn unix_now_secs() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs().to_string())
+        .unwrap_or_default()
 }
 
 // ---- core lifecycle -----------------------------------------------------
@@ -729,6 +758,7 @@ pub fn run() {
             core_stop,
             proxy_set,
             log_tail,
+            latency_list,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

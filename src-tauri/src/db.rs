@@ -68,6 +68,15 @@ impl Default for Settings {
     }
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+pub struct LatencyRow {
+    pub node_id: String,
+    pub delay_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub tested_at: String,
+}
+
 pub struct Db {
     conn: Connection,
 }
@@ -105,6 +114,14 @@ impl Db {
             CREATE TABLE IF NOT EXISTS settings (
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS latency (
+                group_id  INTEGER NOT NULL,
+                node_id   TEXT NOT NULL,
+                delay_ms  INTEGER,
+                error     TEXT,
+                tested_at TEXT NOT NULL,
+                PRIMARY KEY (group_id, node_id)
             );
             INSERT OR IGNORE INTO groups (id, name) VALUES (1, '默认分组');",
         )
@@ -152,8 +169,11 @@ impl Db {
         if id == 1 {
             return Ok(());
         }
-        self.conn
-            .execute("DELETE FROM groups WHERE id = ?1", params![id])?;
+        self.conn.execute(
+            "DELETE FROM latency WHERE group_id = ?1",
+            params![id],
+        )?;
+        self.conn.execute("DELETE FROM groups WHERE id = ?1", params![id])?;
         Ok(())
     }
 
@@ -245,7 +265,44 @@ impl Db {
             "DELETE FROM nodes WHERE group_id = ?1 AND id = ?2",
             params![group_id, id],
         )?;
+        self.conn.execute(
+            "DELETE FROM latency WHERE group_id = ?1 AND node_id = ?2",
+            params![group_id, id],
+        )?;
         Ok(())
+    }
+
+    // ---- latency (persisted speed-test results) ----
+
+    pub fn upsert_latency(
+        &self,
+        group_id: i64,
+        node_id: &str,
+        delay_ms: Option<i64>,
+        error: Option<&str>,
+        tested_at: &str,
+    ) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO latency (group_id, node_id, delay_ms, error, tested_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![group_id, node_id, delay_ms, error, tested_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_latency(&self, group_id: i64) -> rusqlite::Result<Vec<LatencyRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT node_id, delay_ms, error, tested_at FROM latency WHERE group_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![group_id], |row| {
+            Ok(LatencyRow {
+                node_id: row.get(0)?,
+                delay_ms: row.get(1)?,
+                error: row.get(2)?,
+                tested_at: row.get(3)?,
+            })
+        })?;
+        rows.collect()
     }
 
     // ---- settings (single JSON blob) ----
@@ -323,6 +380,28 @@ mod tests {
         assert!(db.list_nodes(gid).unwrap().is_empty());
         db.delete_group(gid).unwrap();
         assert_eq!(db.list_groups().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn latency_roundtrip() {
+        let db = open_tmp();
+        db.upsert_latency(1, "node-a", Some(123), None, "1700000000").unwrap();
+        db.upsert_latency(1, "node-b", None, Some("timeout"), "1700000001").unwrap();
+        let rows = db.list_latency(1).unwrap();
+        assert_eq!(rows.len(), 2);
+        let a = rows.iter().find(|r| r.node_id == "node-a").unwrap();
+        assert_eq!(a.delay_ms, Some(123));
+        let b = rows.iter().find(|r| r.node_id == "node-b").unwrap();
+        assert_eq!(b.error.as_deref(), Some("timeout"));
+        // re-test overwrites
+        db.upsert_latency(1, "node-a", Some(88), None, "1700000002").unwrap();
+        assert_eq!(db.list_latency(1).unwrap().len(), 2);
+        let rows = db.list_latency(1).unwrap();
+        let a = rows.iter().find(|r| r.node_id == "node-a").unwrap();
+        assert_eq!(a.delay_ms, Some(88));
+        // deleting the node removes its latency row
+        db.delete_node(1, "node-a").unwrap();
+        assert_eq!(db.list_latency(1).unwrap().len(), 1);
     }
 
     #[test]

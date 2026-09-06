@@ -9,6 +9,7 @@ import {
   deleteNode,
   groupsList,
   importToGroup,
+  latencyList,
   measureNode,
   nodesList,
   proxySet,
@@ -60,6 +61,17 @@ async function loadAll() {
 async function reloadNodes() {
   const id = currentGroupId();
   nodes.value = await nodesList(id);
+  // restore persisted latency results
+  try {
+    const rows = await latencyList(id);
+    const dm: Record<string, MeasureView> = {};
+    for (const r of rows) {
+      dm[r.node_id] = { delay_ms: r.delay_ms ?? null, error: r.error ?? null };
+    }
+    delayMap.value = dm;
+  } catch {
+    delayMap.value = {};
+  }
   const sel = selectedNodeId();
   if (sel && !nodes.value.find((n) => n.id === sel)) {
     // stale selection (node deleted): fall back to first
