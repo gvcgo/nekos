@@ -21,9 +21,16 @@ var schemePattern = regexp.MustCompile(`^([a-zA-Z0-9]+)://`)
 // v2rayN/nekobox subscription encoding), and tolerates a trailing "url="
 // wrapper line used by some providers.
 func Parse(text string) *model.ImportResult {
-	result := &model.ImportResult{}
+	result := &model.ImportResult{Nodes: []*model.Node{}, Errors: []model.ImportError{}}
 	seen := make(map[string]bool)
 	lineNo := 0
+
+	if looksLikeClash(text) {
+		cr := parseClashPayload(text)
+		result.Nodes = cr.Nodes
+		result.Errors = cr.Errors
+		return result
+	}
 
 	for _, rawLine := range strings.FieldsFunc(text, func(r rune) bool { return r == '\n' || r == '\r' }) {
 		line := strings.TrimSpace(rawLine)
@@ -58,6 +65,15 @@ func Parse(text string) *model.ImportResult {
 		}
 	}
 	return result
+}
+
+// looksLikeClash detects Clash/Mihomo subscription payloads
+// ("#!MANAGED-CONFIG" or a top-level "proxies:" key).
+func looksLikeClash(text string) bool {
+	if strings.Contains(text, "#!MANAGED-CONFIG") {
+		return true
+	}
+	return regexp.MustCompile(`(?m)^\s*proxies:`).MatchString(text)
 }
 
 // ParseOne parses a single share link.

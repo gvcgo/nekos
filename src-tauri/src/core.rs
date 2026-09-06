@@ -10,8 +10,10 @@ use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone)]
 pub struct CoreCtl {
     bin: PathBuf,
+    client: reqwest::Client,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -74,7 +76,23 @@ impl ImportResult {
 
 impl CoreCtl {
     pub fn new() -> Self {
-        CoreCtl { bin: Self::find_binary() }
+        CoreCtl {
+            bin: Self::find_binary(),
+            client: reqwest::Client::builder()
+                .user_agent("nekos/0.1")
+                // Prefer direct connections: env proxies (dev shells often
+                // export http_proxy) are unreliable for subscription hosts
+                // and subscriptions are generally directly reachable.
+                .no_proxy()
+                .timeout(std::time::Duration::from_secs(20))
+                .build()
+                .expect("http client build"),
+        }
+    }
+
+    /// Shared HTTP client used for subscription fetching.
+    pub fn client(&self) -> &reqwest::Client {
+        &self.client
     }
 
     fn find_binary() -> PathBuf {

@@ -36,11 +36,11 @@ type Entry struct {
 
 // Session is the orchestrator->core contract for one running profile.
 type Session struct {
-	Mode     string         `json:"mode"` // global | direct | rule(P1)
-	Inbound  InboundConfig  `json:"inbound"`
-	Entries  []Entry        `json:"entries"`
-	Selected string         `json:"selected"` // entry id; empty => direct
-	LogLevel string         `json:"log_level,omitempty"`
+	Mode     string        `json:"mode"` // global | direct | rule(P1)
+	Inbound  InboundConfig `json:"inbound"`
+	Entries  []Entry       `json:"entries"`
+	Selected string        `json:"selected"` // entry id; empty => direct
+	LogLevel string        `json:"log_level,omitempty"`
 }
 
 // TagFor derives a stable, unique sing-box outbound tag from an entry id.

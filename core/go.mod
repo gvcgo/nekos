@@ -5,6 +5,7 @@ go 1.27.1
 require (
 	github.com/sagernet/sing v0.9.0-beta.4
 	github.com/sagernet/sing-box v1.14.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

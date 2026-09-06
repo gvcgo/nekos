@@ -41,3 +41,26 @@ export interface ImportResult {
 export function parseText(text: string): Promise<ImportResult> {
   return invoke<ImportResult>("parse_text", { text });
 }
+
+export interface SubUserInfo {
+  upload: number;
+  download: number;
+  total: number;
+  expire?: number;
+}
+
+export interface SubscribeResult extends ImportResult {
+  url: string;
+  content_type?: string;
+  userinfo?: SubUserInfo;
+}
+
+/** Fetch a subscription URL (Rust side) and parse its body in core.
+ * headers overrides/adds request headers (some providers require a
+ * specific User-Agent). */
+export function subscribe(
+  url: string,
+  headers: Record<string, string> = {},
+): Promise<SubscribeResult> {
+  return invoke<SubscribeResult>("subscribe", { url, headers });
+}

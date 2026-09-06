@@ -1,6 +1,13 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
-import { coreVersion, parseText, ping, type ImportResult } from "./api";
+import {
+  coreVersion,
+  parseText,
+  ping,
+  subscribe,
+  type ImportResult,
+  type SubscribeResult,
+} from "./api";
 
 type Page = "servers" | "subscriptions" | "settings";
 
@@ -12,11 +19,33 @@ const result = ref<ImportResult | null>(null);
 const busy = ref(false);
 const importError = ref("");
 
+const subUrl = ref("");
+const subResult = ref<SubscribeResult | null>(null);
+const subBusy = ref(false);
+const subError = ref("");
+const subUA = ref("clash-verge/v2.5.2");
+const subExtraHeaders = ref("");
+
 const pages: { id: Page; label: string }[] = [
   { id: "servers", label: "服务" },
   { id: "subscriptions", label: "订阅" },
   { id: "settings", label: "设置" },
 ];
+
+function fmtBytes(n: number): string {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let v = n;
+  let u = 0;
+  while (v >= 1024 && u < units.length - 1) {
+    v /= 1024;
+    u++;
+  }
+  return `${v.toFixed(v >= 100 ? 0 : 1)} ${units[u]}`;
+}
+
+function fmtExpire(secs: number): string {
+  return new Date(secs * 1000).toLocaleString();
+}
 
 onMounted(async () => {
   try {
@@ -36,6 +65,31 @@ async function doParse() {
     importError.value = String(e);
   } finally {
     busy.value = false;
+  }
+}
+
+async function doSubscribe() {
+  subBusy.value = true;
+  subError.value = "";
+  try {
+    const headers: Record<string, string> = {};
+    if (subUA.value.trim()) headers["User-Agent"] = subUA.value.trim();
+    for (const line of subExtraHeaders.value.split("\n")) {
+      const t = line.trim();
+      if (!t || t.startsWith("#")) continue;
+      const idx = t.indexOf(":");
+      if (idx <= 0) {
+        subError.value = `额外请求头格式错误（应为 Key: Value）：${t}`;
+        return;
+      }
+      headers[t.slice(0, idx).trim()] = t.slice(idx + 1).trim();
+    }
+    subResult.value = await subscribe(subUrl.value.trim(), headers);
+  } catch (e) {
+    subResult.value = null;
+    subError.value = String(e);
+  } finally {
+    subBusy.value = false;
   }
 }
 </script>
@@ -107,8 +161,73 @@ async function doParse() {
         </div>
       </section>
 
-      <section v-else-if="page === 'subscriptions'" class="panel placeholder">
-        P1：多订阅分组管理（自动更新/去重/userinfo）
+      <section v-else-if="page === 'subscriptions'" class="panel">
+        <div class="panel-head">
+          <h1>订阅</h1>
+          <span class="hint">P0：抓取 + 解析预览；分组入库/自动更新随后续里程碑</span>
+        </div>
+
+        <div class="import">
+          <h2>从订阅地址抓取</h2>
+          <div class="row">
+            <input
+              v-model="subUrl"
+              class="url-input"
+              placeholder="https://example.com/xxxx/sub 或 ...?clash=2"
+              @keydown.enter="doSubscribe"
+            />
+            <button :disabled="subBusy || !subUrl.trim()" @click="doSubscribe">
+              {{ subBusy ? "抓取中…" : "抓取解析" }}
+            </button>
+          </div>
+
+          <details class="headers">
+            <summary>请求头（部分订阅校验 User-Agent）</summary>
+            <div class="header-grid">
+              <label>User-Agent</label>
+              <input v-model="subUA" class="url-input" placeholder="如 clash-verge/v2.5.2" />
+            </div>
+            <label class="extra-label">额外请求头（每行 Key: Value）</label>
+            <textarea
+              v-model="subExtraHeaders"
+              rows="2"
+              class="extra-headers"
+              placeholder="Referer: https://example.com&#10;Authorization: Bearer xxxx"
+            />
+          </details>
+          <span v-if="subError" class="err">{{ subError }}</span>
+
+          <div v-if="subResult" class="result">
+            <div class="result-head">
+              <strong>解析结果</strong>
+              <span>节点 {{ subResult.nodes.length }} · 错误 {{ subResult.errors.length }}</span>
+            </div>
+            <div v-if="subResult.userinfo" class="userinfo">
+              <span>流量 {{ fmtBytes(subResult.userinfo.upload + subResult.userinfo.download) }} /
+                {{ fmtBytes(subResult.userinfo.total) }}</span>
+              <span v-if="subResult.userinfo.expire">
+                到期 {{ fmtExpire(subResult.userinfo.expire) }}
+              </span>
+            </div>
+            <table v-if="subResult.nodes.length">
+              <thead>
+                <tr><th>类型</th><th>备注</th><th>ID</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="n in subResult.nodes" :key="n.id">
+                  <td><code>{{ n.type }}</code></td>
+                  <td>{{ n.remark }}</td>
+                  <td class="mono">{{ n.id }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <ul v-if="subResult.errors.length" class="errs">
+              <li v-for="(e, i) in subResult.errors" :key="i">
+                {{ e.reason }} — <span class="mono">{{ e.snippet }}</span>
+              </li>
+            </ul>
+          </div>
+        </div>
       </section>
 
       <section v-else class="panel placeholder">
@@ -261,6 +380,60 @@ button:disabled {
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
+}
+
+.url-input {
+  flex: 1;
+  max-width: 560px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  background: transparent;
+  color: inherit;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+}
+
+.headers {
+  max-width: 560px;
+  margin: 10px 0;
+  font-size: 12px;
+}
+
+.headers summary {
+  cursor: pointer;
+  opacity: 0.8;
+}
+
+.header-grid {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0;
+}
+
+.header-grid label {
+  width: 84px;
+  flex: none;
+}
+
+.extra-label {
+  display: block;
+  margin: 4px 0;
+}
+
+.extra-headers {
+  width: 100%;
+  min-height: 40px;
+}
+
+.userinfo {
+  display: flex;
+  gap: 18px;
+  padding: 8px 10px;
+  font-size: 12px;
+  border-top: 1px solid var(--border);
+  background: rgba(34, 197, 94, 0.06);
 }
 
 .result-head {

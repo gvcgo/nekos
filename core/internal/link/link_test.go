@@ -180,6 +180,66 @@ func TestParseVlessWS(t *testing.T) {
 	}
 }
 
+func TestParseClashSubscription(t *testing.T) {
+	fixture := `#!MANAGED-CONFIG https://example.com/x?clash=2
+proxies:
+  - name: "SS-测试"
+    type: ss
+    server: 1.2.3.4
+    port: 8388
+    cipher: aes-256-gcm
+    password: pwd123
+  - name: "VL-WS"
+    type: vless
+    server: cdn.example.com
+    port: 443
+    uuid: 17e65fb1-5fc9-44cc-a6c6-25ecfbbcd886
+    tls: true
+    servername: 6bd2f208.edge-bbe3c3f6.pages.dev
+    client-fingerprint: chrome
+    network: ws
+    ws-opts:
+      path: "/?ed=2048"
+      headers:
+        Host: 6bd2f208.edge-bbe3c3f6.pages.dev
+  - name: "TROJAN-X"
+    type: trojan
+    server: t.example.com
+    port: 443
+    password: secret
+    sni: t.example.com
+`
+	res := Parse(fixture)
+	if len(res.Errors) != 0 {
+		t.Fatalf("unexpected errors: %+v", res.Errors)
+	}
+	if len(res.Nodes) != 3 {
+		t.Fatalf("want 3 nodes, got %d", len(res.Nodes))
+	}
+	if res.Nodes[0].Remark != "SS-测试" || res.Nodes[0].OutboundType() != "shadowsocks" {
+		t.Fatalf("node0 = %s/%s", res.Nodes[0].OutboundType(), res.Nodes[0].Remark)
+	}
+	m1 := decodeOut(t, res.Nodes[1].Out)
+	if got := field[string](t, m1, "type"); got != "vless" {
+		t.Fatalf("node1 type = %q", got)
+	}
+	ws := field[*wsTransport](t, m1, "transport")
+	if ws == nil || ws.Type != "ws" || ws.Path != "/?ed=2048" {
+		t.Fatalf("node1 transport = %+v", ws)
+	}
+	if ws.Headers["Host"] != "6bd2f208.edge-bbe3c3f6.pages.dev" {
+		t.Fatalf("node1 headers = %+v", ws.Headers)
+	}
+	tls1 := field[*tls](t, m1, "tls")
+	if tls1 == nil || tls1.UTLS == nil || tls1.UTLS.Fingerprint != "chrome" {
+		t.Fatalf("node1 tls = %+v", tls1)
+	}
+	m2 := decodeOut(t, res.Nodes[2].Out)
+	if got := field[string](t, m2, "type"); got != "trojan" {
+		t.Fatalf("node2 type = %q", got)
+	}
+}
+
 func TestParseDedupeAndBase64Subscription(t *testing.T) {
 	// Whole-payload base64 (standard v2rayN subscription encoding).
 	res := Parse(anytlsA + "\n" + anytlsB + "\n" + anytlsA)

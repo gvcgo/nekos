@@ -32,9 +32,9 @@ func (n *Node) OutboundType() string {
 
 // ImportError reports a single failed item while parsing a batch.
 type ImportError struct {
-	Line   int    `json:"line"`
+	Line    int    `json:"line"`
 	Snippet string `json:"snippet"` // truncated source
-	Reason string `json:"reason"`
+	Reason  string `json:"reason"`
 }
 
 // ImportResult is the outcome of parsing a link/subscription batch.
