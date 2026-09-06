@@ -452,7 +452,8 @@ function delayText(n: Node): string {
   const m = delayMap.value[n.id];
   if (!m) return "—";
   if (m.delay_ms != null) return `${m.delay_ms} ms`;
-  return "失败";
+  if (m.error) return "失败";
+  return "测速中…"; // probe in flight (no result yet)
 }
 
 onMounted(loadAll);
