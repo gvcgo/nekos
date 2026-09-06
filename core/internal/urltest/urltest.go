@@ -30,7 +30,7 @@ import (
 
 const (
 	DefaultURL       = "http://www.gstatic.com/generate_204"
-	probeConcurrency = 32
+	probeConcurrency = 4 // high concurrency trips per-IP session limits
 )
 
 // Entry mirrors build.Entry: a stable id plus its outbound options JSON.
@@ -43,6 +43,8 @@ type Entry struct {
 type Session struct {
 	Entries  []Entry `json:"entries"`
 	TimeoutS int     `json:"timeout_s,omitempty"` // per-node seconds, default 5
+	// Concurrency caps simultaneous delay probes (default 32).
+	Concurrency int `json:"concurrency,omitempty"`
 }
 
 // Result is one node's latency outcome.
@@ -136,9 +138,13 @@ func Probe(sess *Session) ([]Result, error) {
 		results[i] = Result{ID: e.ID}
 	}
 
-	// Concurrent delay probes (bounded lanes).
+	// Concurrent delay probes (bounded lanes). High concurrency against a
+	// single-entry server can trip per-IP session limits, so allow tuning.
 	work := make(chan string)
 	lanes := probeConcurrency
+	if sess.Concurrency > 0 && sess.Concurrency < lanes {
+		lanes = sess.Concurrency
+	}
 	if lanes > len(sess.Entries) {
 		lanes = len(sess.Entries)
 	}
