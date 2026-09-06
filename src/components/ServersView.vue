@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import {
   coreStatus,
   coreStop,
@@ -200,20 +201,24 @@ const qrBusy = ref(false);
 
 async function copyText(text: string): Promise<boolean> {
   try {
-    await navigator.clipboard.writeText(text);
+    await writeText(text); // native (Rust), no DOM side effects
     return true;
   } catch {
+    // last-resort fallback: fully offscreen, restore scroll, no focus ring
     const ta = document.createElement("textarea");
     ta.value = text;
-    ta.style.position = "fixed";
-    ta.style.opacity = "0";
+    ta.setAttribute("readonly", "");
+    ta.style.cssText = "position:fixed;top:0;left:-9999px;opacity:0";
     document.body.appendChild(ta);
-    ta.select();
+    const sc = { x: window.scrollX, y: window.scrollY };
     let ok = false;
     try {
+      ta.focus({ preventScroll: true });
+      ta.select();
       ok = document.execCommand("copy");
     } finally {
       document.body.removeChild(ta);
+      window.scrollTo(sc.x, sc.y);
     }
     return ok;
   }

@@ -1168,6 +1168,7 @@ async fn subscribe(
 
 pub fn run() {
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
             let handle = app.handle();
             let state = AppState::open(handle)?;
