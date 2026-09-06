@@ -33,6 +33,16 @@ onMounted(async () => {
   }
 });
 
+async function toggleFilter(on: boolean) {
+  try {
+    settings.value = await settingsSet({ filter_ipv6: on });
+    filterIpv6.value = on;
+    savedMsg.value = on ? "已开启 IPv6 过滤（对之后导入/更新生效）" : "已关闭 IPv6 过滤";
+  } catch (e) {
+    err.value = String(e);
+  }
+}
+
 async function save() {
   saving.value = true;
   savedMsg.value = "";
@@ -86,8 +96,8 @@ async function save() {
         关闭窗口时最小化到托盘
       </label>
       <label class="check" title="开启后，导入/更新订阅与粘贴导入时会丢弃 server 为 IPv6 地址的节点">
-        <input v-model="filterIpv6" type="checkbox" />
-        过滤 IPv6 节点（下次导入/更新生效）
+        <input type="checkbox" :checked="filterIpv6" @change="toggleFilter(($event.target as HTMLInputElement).checked)" />
+        过滤 IPv6 节点（立即保存，对之后导入/更新生效）
       </label>
       <p class="note">系统代理独立开关在「服务」页工具栏：内核运行中可随时开启/关闭，退出自动还原。</p>
 

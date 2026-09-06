@@ -192,12 +192,15 @@ fn with_db<T>(
 }
 
 /// True when a node's server field is an IPv6 literal (domains pass).
+/// Tolerates "[...]" brackets and "%zone" suffixes.
 fn is_ipv6_server(out: &serde_json::Value) -> bool {
-    out.get("server")
-        .and_then(|s| s.as_str())
-        .and_then(|h| h.parse::<std::net::IpAddr>().ok())
-        .map(|ip| ip.is_ipv6())
-        .unwrap_or(false)
+    let host = match out.get("server").and_then(|s| s.as_str()) {
+        Some(h) => h.trim(),
+        None => return false,
+    };
+    let host = host.strip_prefix('[').and_then(|h| h.split_once(']')).map(|(h, _)| h).unwrap_or(host);
+    let host = host.split_once('%').map(|(h, _)| h).unwrap_or(host);
+    host.parse::<std::net::IpAddr>().map(|ip| ip.is_ipv6()).unwrap_or(false)
 }
 
 /// Apply the "filter IPv6 nodes" preference to parsed nodes.
@@ -719,6 +722,45 @@ fn unix_now_secs() -> String {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs().to_string())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use super::*;
+    use crate::core::NodeMeta;
+
+    fn meta(server: &str) -> NodeMeta {
+        NodeMeta {
+            id: "id".into(),
+            remark: "r".into(),
+            r#type: "anytls".into(),
+            out: serde_json::json!({ "type": "anytls", "server": server }),
+        }
+    }
+
+    #[test]
+    fn ipv6_literal_detection() {
+        assert!(is_ipv6_server(&meta("2001:db8::1").out));
+        assert!(is_ipv6_server(&meta("[240e:1234::abcd]").out));
+        assert!(is_ipv6_server(&meta("fe80::1%eth0").out));
+        assert!(!is_ipv6_server(&meta("example.com").out));
+        assert!(!is_ipv6_server(&meta("1.2.3.4").out));
+    }
+
+    #[test]
+    fn filter_keeps_domains_and_v4() {
+        let nodes = vec![
+            meta("example.com"),
+            meta("1.2.3.4"),
+            meta("2001:db8::1"),
+            meta("[240e::1]"),
+        ];
+        let kept = filter_nodes(&nodes, true);
+        assert_eq!(kept.len(), 2);
+        assert!(kept.iter().all(|n| !is_ipv6_server(&n.out)));
+        // toggle off keeps everything
+        assert_eq!(filter_nodes(&nodes, false).len(), 4);
+    }
 }
 
 // ---- core lifecycle -----------------------------------------------------
