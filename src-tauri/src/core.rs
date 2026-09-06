@@ -16,13 +16,6 @@ pub struct CoreCtl {
     client: reqwest::Client,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
-pub struct CoreStatus {
-    pub running: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub started_at: Option<String>,
-}
-
 #[derive(Deserialize, Serialize, Clone)]
 pub struct ParseError {
     pub line: i64,
@@ -42,6 +35,8 @@ pub struct NodeMeta {
     pub id: String,
     pub remark: String,
     pub r#type: String,
+    /// Full sing-box outbound options JSON (persisted verbatim).
+    pub out: serde_json::Value,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -59,9 +54,15 @@ impl ImportResult {
                 arr.iter()
                     .filter_map(|n| serde_json::from_value::<NodeRaw>(n.clone()).ok())
                     .map(|n| NodeMeta {
-                        r#type: n.out.get("type").and_then(|t| t.as_str()).unwrap_or("?").into(),
+                        r#type: n
+                            .out
+                            .get("type")
+                            .and_then(|t| t.as_str())
+                            .unwrap_or("?")
+                            .into(),
                         id: n.id,
                         remark: n.remark,
+                        out: n.out,
                     })
                     .collect()
             })
@@ -130,7 +131,9 @@ impl CoreCtl {
             .expect("stdin piped")
             .write_all(stdin)
             .map_err(|e| format!("write core stdin: {e}"))?;
-        let out = child.wait_with_output().map_err(|e| format!("wait core: {e}"))?;
+        let out = child
+            .wait_with_output()
+            .map_err(|e| format!("wait core: {e}"))?;
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
             return Err(format!("core {} failed: {}", args.join(" "), stderr.trim()));
@@ -142,6 +145,32 @@ impl CoreCtl {
     pub fn version(&self) -> Result<String, String> {
         let out = self.run(&["version"], b"")?;
         Ok(String::from_utf8_lossy(&out).trim().to_string())
+    }
+
+    /// Path of the core executable (used to spawn the long-running child).
+    pub fn binary(&self) -> &std::path::Path {
+        &self.bin
+    }
+
+    /// `nekos-core test`: measure TCP/HTTP latency through the given
+    /// session's selected node. Returns delay in milliseconds on success.
+    pub fn core_test(
+        &self,
+        session_json: &str,
+        target: &str,
+        timeout_s: f64,
+    ) -> Result<i64, String> {
+        let secs = format!("{timeout_s}");
+        let out = self.run(
+            &["test", "-target", target, "-timeout", &secs],
+            session_json.as_bytes(),
+        )?;
+        let value: serde_json::Value =
+            serde_json::from_slice(&out).map_err(|e| format!("core test output: {e}"))?;
+        value
+            .get("delay_ms")
+            .and_then(|v| v.as_i64())
+            .ok_or_else(|| format!("core test: no delay_ms in {value}"))
     }
 
     /// `nekos-core parse` over arbitrary link/subscription text.

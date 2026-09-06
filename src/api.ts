@@ -6,21 +6,12 @@ export function ping(): Promise<string> {
   return invoke<string>("ping");
 }
 
-/** Report the embedded sing-box version as seen by the core process. */
 export function coreVersion(): Promise<string> {
   return invoke<string>("core_version");
 }
 
-export interface CoreStatus {
-  running: boolean;
-  started_at?: string;
-}
+// ---- parse / import -----------------------------------------------------
 
-export function coreStatus(): Promise<CoreStatus> {
-  return invoke<CoreStatus>("core_status");
-}
-
-/** Forward raw text (links/subscription payload) to the core parser. */
 export interface ParseError {
   line: number;
   snippet: string;
@@ -31,6 +22,8 @@ export interface NodeMeta {
   id: string;
   remark: string;
   type: string;
+  /** Full sing-box outbound options JSON. */
+  out: unknown;
 }
 
 export interface ImportResult {
@@ -53,14 +46,121 @@ export interface SubscribeResult extends ImportResult {
   url: string;
   content_type?: string;
   userinfo?: SubUserInfo;
+  group_id?: number;
 }
 
-/** Fetch a subscription URL (Rust side) and parse its body in core.
- * headers overrides/adds request headers (some providers require a
- * specific User-Agent). */
 export function subscribe(
   url: string,
   headers: Record<string, string> = {},
+  saveName?: string,
 ): Promise<SubscribeResult> {
-  return invoke<SubscribeResult>("subscribe", { url, headers });
+  return invoke<SubscribeResult>("subscribe", { url, headers, saveName });
+}
+
+// ---- storage ------------------------------------------------------------
+
+export interface Group {
+  id: number;
+  name: string;
+  sub_url?: string;
+  sub_userinfo?: string;
+  updated_at?: string;
+}
+
+export interface Node {
+  id: string;
+  group_id: number;
+  type: string;
+  remark: string;
+  out: string;
+}
+
+export function groupsList(): Promise<Group[]> {
+  return invoke<Group[]>("groups_list");
+}
+
+export function createGroup(name: string, subUrl?: string): Promise<Group> {
+  return invoke<Group>("create_group", { name, subUrl });
+}
+
+export function deleteGroup(groupId: number): Promise<void> {
+  return invoke<void>("delete_group", { groupId });
+}
+
+export function nodesList(groupId: number): Promise<Node[]> {
+  return invoke<Node[]>("nodes_list", { groupId });
+}
+
+export function deleteNode(groupId: number, nodeId: string): Promise<void> {
+  return invoke<void>("delete_node", { groupId, nodeId });
+}
+
+/** Parse text and persist nodes into the group; returns parse result. */
+export function importToGroup(groupId: number, text: string): Promise<ImportResult> {
+  return invoke<ImportResult>("import_to_group", { groupId, text });
+}
+
+// ---- settings / selection -----------------------------------------------
+
+export interface Settings {
+  current_group_id: number;
+  port: number;
+  mode: string; // global | direct | rule
+  proxy_enabled: boolean;
+  close_to_tray: boolean;
+  selected_by_group: Record<number, string>;
+}
+
+export interface SettingsPatch {
+  current_group_id?: number;
+  port?: number;
+  mode?: string;
+  proxy_enabled?: boolean;
+  close_to_tray?: boolean;
+}
+
+export function settingsGet(): Promise<Settings> {
+  return invoke<Settings>("settings_get");
+}
+
+export function settingsSet(patch: SettingsPatch): Promise<Settings> {
+  return invoke<Settings>("settings_set", { patch });
+}
+
+export function setNodeCurrent(groupId: number, nodeId: string): Promise<void> {
+  return invoke<void>("set_node_current", { groupId, nodeId });
+}
+
+// ---- latency / core lifecycle -------------------------------------------
+
+export interface MeasureView {
+  delay_ms?: number | null;
+  error?: string | null;
+}
+
+export function measureNode(groupId: number, nodeId: string): Promise<MeasureView> {
+  return invoke<MeasureView>("measure_node", { groupId, nodeId });
+}
+
+export interface CoreStatusView {
+  running: boolean;
+  started_at?: string;
+  proxy_enabled: boolean;
+}
+
+export interface RunResult {
+  status: CoreStatusView;
+  selected_node?: string | null;
+}
+
+export function coreStart(): Promise<RunResult> {
+  return invoke<RunResult>("core_start");
+}
+
+export function coreStop(): Promise<CoreStatusView> {
+  return invoke<CoreStatusView>("core_stop");
+}
+
+export function coreStatus(): Promise<CoreStatusView> {
+  return invoke<CoreStatusView>("core_status");
 }

@@ -9,7 +9,21 @@ use std::collections::HashMap;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_LENGTH, CONTENT_TYPE};
 use serde::Serialize;
 
+use crate::core::ImportResult;
+
 pub const MAX_BODY_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Result of a subscription fetch + parse. When the caller asked to save
+/// it (save_name), group_id references the new persisted group.
+#[derive(Serialize, Clone)]
+pub struct SubscribeOutcome {
+    pub url: String,
+    pub content_type: Option<String>,
+    pub userinfo: Option<SubUserInfo>,
+    pub group_id: Option<i64>,
+    #[serde(flatten)]
+    pub parsed: ImportResult,
+}
 
 #[derive(Serialize, Clone, Debug)]
 pub struct SubUserInfo {
@@ -51,7 +65,11 @@ pub async fn fetch_subscribe(
     if !status.is_success() {
         return Err(format!("subscription server returned HTTP {status}"));
     }
-    if let Some(len) = resp.headers().get(CONTENT_LENGTH).and_then(|v| v.to_str().ok()) {
+    if let Some(len) = resp
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+    {
         if let Ok(len) = len.parse::<u64>() {
             if len > MAX_BODY_BYTES {
                 return Err(format!("subscription body too large ({len} bytes)"));
@@ -73,17 +91,27 @@ pub async fn fetch_subscribe(
         .await
         .map_err(|e| format!("read response: {e}"))?;
     if body.len() as u64 > MAX_BODY_BYTES {
-        return Err(format!("subscription body too large ({} bytes)", body.len()));
+        return Err(format!(
+            "subscription body too large ({} bytes)",
+            body.len()
+        ));
     }
     Ok((body.to_vec(), content_type, userinfo))
 }
 
 /// Parses "upload=0; download=123; total=1024; expire=1700000000".
 fn parse_userinfo(value: &str) -> Option<SubUserInfo> {
-    let mut info = SubUserInfo { upload: 0, download: 0, total: 0, expire: None };
+    let mut info = SubUserInfo {
+        upload: 0,
+        download: 0,
+        total: 0,
+        expire: None,
+    };
     for pair in value.split(';') {
         let mut it = pair.trim().splitn(2, '=');
-        let (Some(key), Some(val)) = (it.next(), it.next()) else { continue };
+        let (Some(key), Some(val)) = (it.next(), it.next()) else {
+            continue;
+        };
         let num = val.trim().parse::<u64>().ok()?;
         match key.trim() {
             "upload" => info.upload = num,
@@ -102,7 +130,9 @@ mod tests {
 
     #[test]
     fn userinfo_parsing() {
-        let info = parse_userinfo("upload=1024; download=2048; total=1073741824; expire=1780000000").unwrap();
+        let info =
+            parse_userinfo("upload=1024; download=2048; total=1073741824; expire=1780000000")
+                .unwrap();
         assert_eq!(info.upload, 1024);
         assert_eq!(info.download, 2048);
         assert_eq!(info.total, 1073741824);
@@ -121,16 +151,28 @@ mod tests {
             .timeout(std::time::Duration::from_secs(20))
             .build()
             .unwrap();
-        let url = std::env::var("NEKOS_TEST_SUB_URL")
-            .unwrap_or_else(|_| "https://6bd2f208.edge-bbe3c3f6.pages.dev/17e65fb1-5fc9-44cc-a6c6-25ecfbbcd886/sub".into());
-        let (body, ctype, userinfo) = fetch_subscribe(&client, &url, &HashMap::new()).await.expect("fetch");
+        let url = std::env::var("NEKOS_TEST_SUB_URL").unwrap_or_else(|_| {
+            "https://6bd2f208.edge-bbe3c3f6.pages.dev/17e65fb1-5fc9-44cc-a6c6-25ecfbbcd886/sub"
+                .into()
+        });
+        let (body, ctype, userinfo) = fetch_subscribe(&client, &url, &HashMap::new())
+            .await
+            .expect("fetch");
         assert!(!body.is_empty());
         assert!(ctype.is_some());
-        println!("url={url}\nbytes={}\ncontent_type={:?}\nuserinfo={:?}", body.len(), ctype, userinfo);
+        println!(
+            "url={url}\nbytes={}\ncontent_type={:?}\nuserinfo={:?}",
+            body.len(),
+            ctype,
+            userinfo
+        );
         // Body must be decodable by the core parser path: plain link text,
         // clash yaml, or an all-base64 payload (v2rayN-style).
         let text = String::from_utf8_lossy(&body);
-        let all_base64 = text.trim().chars().all(|c| c.is_ascii_alphanumeric() || "+/=\n\r".contains(c));
+        let all_base64 = text
+            .trim()
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "+/=\n\r".contains(c));
         assert!(text.contains("://") || text.contains("proxies:") || all_base64);
     }
 
@@ -145,14 +187,15 @@ mod tests {
             .timeout(std::time::Duration::from_secs(20))
             .build()
             .unwrap();
-        let url = std::env::var("NEKOS_TEST_CLASH_URL").unwrap_or_else(|_| {
-            "http://43.135.28.238/link/BRvzJbPhIM5j0ABa?clash=2".into()
-        });
+        let url = std::env::var("NEKOS_TEST_CLASH_URL")
+            .unwrap_or_else(|_| "http://43.135.28.238/link/BRvzJbPhIM5j0ABa?clash=2".into());
         let mut headers = HashMap::new();
-        let ua = std::env::var("NEKOS_TEST_CLASH_UA")
-            .unwrap_or_else(|_| "clash-verge/v2.5.2".into());
+        let ua =
+            std::env::var("NEKOS_TEST_CLASH_UA").unwrap_or_else(|_| "clash-verge/v2.5.2".into());
         headers.insert("User-Agent".into(), ua);
-        let (body, _, userinfo) = fetch_subscribe(&client, &url, &headers).await.expect("fetch");
+        let (body, _, userinfo) = fetch_subscribe(&client, &url, &headers)
+            .await
+            .expect("fetch");
         println!("url={url}\nbytes={}\nuserinfo={userinfo:?}", body.len());
         let text = String::from_utf8_lossy(&body);
         // The tested endpoint is a Clash YAML subscription.

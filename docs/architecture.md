@@ -133,6 +133,8 @@ core.log          {level, lines}
 `session` 载荷（编排层→core）：`{mode: rule|global|direct, selected_tag, inbounds: {socks_port?, http_port?, mixed_port?, tun?}, dns: {…}, ruleset_paths: []}`。core 内部由 session+节点库（NodeSpec 列表随 start 一并传，或按 tag 引用先前 parse 结果）组装完整 option。
 
 ### 6.3 切节点与测速的两种实现，按里程碑演进
+- **P0 现状（2026-09-06 落地）**：编排层以 `nekos-core run` **子进程 + stdin session** 的方式管理长驻 core（就绪判定读首行 JSON），停止即 kill；切节点 = 停旧启新（整核重建）。测速走 `nekos-core test` 短命令（URL probe，复用 run 包 MeasureNode）。这是 §6.2 中 `core.run/core.stop/url_test` 语义的过渡实现，不含 token/RPC。
+- P1+ 增强：见下（selector 热切换 / loopback clash api）；长驻 JSON-RPC 面（§6.1/§6.2）作为独立项推进。
 - P0/P1 兜底：**重建实例**——更新 session、停旧 `box`、启新 `box`（毫秒级；v2rayN 亦是整核重启）。简单、零内部 API 依赖。
 - P1+ 增强：尝试 sing-box 已导出的 selector/urltest 运行时切换（若上游提供对外控制入口，如 clashapi handler 同款逻辑）；**若不可行则启用 loopback-only 的 `experimental.clash_api`**（sing-box 原生支持 selector 切换、`/proxies/{name}/delay`、`/connections` 统计）作为运行时控制面，此时 core 自建的 core.select/core.url_test 变薄代理。两条路都保留，不把宝押在内部未导出 API 上。
 

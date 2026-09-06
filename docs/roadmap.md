@@ -13,15 +13,17 @@
 - [x] Core: builder——session → sing-box option（mixed/socks 入站 + 选中节点出站 + direct/block）
 - [x] Core: runtime——进程内 box.New/Start/Close（include.Context 引导）；CLI `parse/config/run/test/version`
 - [x] Core: 冒烟——4 节点（anytls×2/vless/trojan）经内嵌 sing-box 真实 HTTPS 204 全链路连通（337–1117ms，2026-09-06）
-- [ ] 编排层: 拉起/守护 core 子进程 + RPC client + 配置/DB 布局
-- [ ] 编排层: SQLite（groups/nodes/settings）schema + 迁移
-- [ ] 编排层: 分享链接/订阅导入命令（剪贴板/URL/文件）
-- [ ] 平台层: Linux GSettings 系统代理开关（GNOME）+ 降级提示
-- [ ] UI: 服务页（分组树 + 节点表 + 右键菜单：测速/选中/删除/导出）+ 开关按钮
-- [ ] UI: 订阅导入对话框（URL/文本/文件/剪贴板）
-- [ ] UI: 设置页（监听端口、当前模式、系统代理、日志查看）
-- [ ] 托盘最小化 + 退出即清理（恢复系统代理/停 core）
-- [ ] 端到端验收：导入 3 条 URI → 测速 → 选中 → 系统代理 → 直连验证
+- [ ] Core: JSON-RPC v0（长驻控制面；当前阶段以 run-CLI 子进程重建实例先行，见 architecture §6.3）
+- [x] 编排层: core 子进程生命周期（启动就绪判定/停止，Rust 集成测试）
+- [x] 编排层: SQLite（groups/nodes/settings）schema + 迁移 + CRUD（rusqlite bundled）
+- [x] 编排层: 分享链接/订阅文本导入入库命令 + 订阅 URL 抓取（自定义 UA/headers、直连）
+- [x] Clash 订阅 proxies 解析（anytls/ss/vmess/vless/trojan/hy2/tuic/wg；真订阅 22 节点实测）
+- [x] 平台层: Linux GSettings 系统代理开关（GNOME，已验证 enable/restore）
+- [x] UI: 服务页（分组下拉 + 节点表 + 测速/选中/删除 + 启动停止 + 模式 + 代理开关）
+- [x] UI: 订阅页（URL/headers 抓取预览 + 保存为新分组）
+- [x] UI: 设置页（端口/模式/系统代理/托盘项）
+- [x] 托盘最小化 + 关闭进托盘 + 退出清理（恢复系统代理/停 core）
+- [x] 端到端验收：DB 预置 4 节点 + Clash 22 节点 → 截图确认节点表/分组/状态渲染；启动链路由集成测试覆盖
 
 ## P1 — 体验补齐
 - [ ] 切节点热更新：优先 selector 运行时切换；不可行则优雅重建（毫秒级，连接可断）
