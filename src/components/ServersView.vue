@@ -10,6 +10,7 @@ import {
   groupsList,
   importToGroup,
   latencyList,
+  measureBatch,
   measureNode,
   nodesList,
   proxySet,
@@ -212,37 +213,22 @@ async function testNode(nodeId: string) {
   delayMap.value[nodeId] = await measureNode(currentGroupId(), nodeId);
 }
 
-/** Run async work over items with bounded concurrency. */
-async function mapLimit<T>(
-  items: T[],
-  limit: number,
-  worker: (item: T) => Promise<void>,
-): Promise<void> {
-  let idx = 0;
-  const lanes: Promise<void>[] = [];
-  for (let lane = 0; lane < Math.min(limit, items.length); lane++) {
-    lanes.push(
-      (async () => {
-        while (idx < items.length) {
-          const item = items[idx++];
-          try {
-            await worker(item);
-          } catch (e) {
-            err.value = String(e);
-          }
-        }
-      })(),
-    );
-  }
-  await Promise.all(lanes);
-}
-
 async function testAll() {
   testingAll.value = true;
-  await mapLimit(nodes.value, 6, async (n) => {
-    await testNode(n.id);
-  });
-  testingAll.value = false;
+  err.value = "";
+  try {
+    // one core instance probes every node concurrently (v2rayN semantics)
+    const rows = await measureBatch(currentGroupId());
+    const dm: Record<string, MeasureView> = { ...delayMap.value };
+    for (const r of rows) {
+      dm[r.node_id] = { delay_ms: r.delay_ms ?? null, error: r.error ?? null };
+    }
+    delayMap.value = dm;
+  } catch (e) {
+    err.value = String(e);
+  } finally {
+    testingAll.value = false;
+  }
 }
 
 async function toggleProxy(on: boolean) {

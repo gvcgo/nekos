@@ -452,8 +452,62 @@ async fn set_node_current(
     .map_err(|e| e.to_string())?
 }
 
-/// Measure latency through one node (https URL probe, like the CLI test).
-/// The result is persisted so it survives page switches and restarts.
+/// One measured node row (v2rayN-style batch outcome).
+#[derive(Serialize)]
+pub struct BatchRow {
+    pub node_id: String,
+    pub delay_ms: Option<i64>,
+    pub error: Option<String>,
+}
+
+/// Build the urltest session for a node subset of a group and probe it in
+/// one sing-box instance (v2rayN semantics: concurrent, HTTP 204).
+fn run_urltest(
+    db: &Mutex<Db>,
+    ctl: &CoreCtl,
+    group_id: i64,
+    ids: Option<&[String]>,
+) -> Result<Vec<core::UrlTestRow>, String> {
+    let pairs = {
+        let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+        let nodes = db.list_nodes(group_id).map_err(|e| format!("db: {e}"))?;
+        let selected: Vec<(String, serde_json::Value)> = nodes
+            .iter()
+            .filter(|n| ids.map(|ids| ids.contains(&n.id)).unwrap_or(true))
+            .filter_map(|n| {
+                serde_json::from_str::<serde_json::Value>(&n.out)
+                    .ok()
+                    .map(|out| (n.id.clone(), out))
+            })
+            .collect();
+        if selected.is_empty() {
+            return Err("没有可测速的节点".into());
+        }
+        selected
+    };
+    let entries: Vec<serde_json::Value> = pairs
+        .into_iter()
+        .map(|(id, out)| serde_json::json!({ "id": id, "out": out }))
+        .collect();
+    let session = serde_json::json!({ "entries": entries, "timeout_s": 5 }).to_string();
+    ctl.urltest(&session)
+}
+
+fn persist_rows(db: &Mutex<Db>, group_id: i64, rows: &[core::UrlTestRow]) {
+    if let Ok(db) = db.lock() {
+        for r in rows {
+            let _ = db.upsert_latency(
+                group_id,
+                &r.id,
+                r.delay_ms,
+                r.error.as_deref(),
+                &unix_now_secs(),
+            );
+        }
+    }
+}
+
+/// Measure one node (single-entry batch, same engine as batch testing).
 #[tauri::command]
 async fn measure_node(
     state: State<'_, AppState>,
@@ -462,51 +516,45 @@ async fn measure_node(
 ) -> Result<MeasureView, String> {
     let db = state.db.clone();
     let ctl = state.ctl.clone();
-    let node_id2 = node_id.clone();
-    let session = tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
-        let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
-        let node = db
-            .node(group_id, &node_id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "节点不存在".to_string())?;
-        let out: serde_json::Value =
-            serde_json::from_str(&node.out).map_err(|e| format!("node json: {e}"))?;
-        Ok(serde_json::json!({
-            "mode": "global",
-            "entries": [{ "id": node.id, "out": out }],
-            "selected": node.id,
-        })
-        .to_string())
+    let ids = vec![node_id.clone()];
+    let rows = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<core::UrlTestRow>, String> {
+        let rows = run_urltest(&db, &ctl, group_id, Some(&ids))?;
+        persist_rows(&db, group_id, &rows);
+        Ok(rows)
     })
     .await
     .map_err(|e| e.to_string())??;
+    let row = rows.into_iter().next().unwrap_or(core::UrlTestRow {
+        id: node_id,
+        delay_ms: None,
+        error: Some("没有返回结果".into()),
+    });
+    Ok(MeasureView { delay_ms: row.delay_ms, error: row.error })
+}
 
+/// Measure every node of a group in one instance, persisted per node.
+#[tauri::command]
+async fn measure_batch(
+    state: State<'_, AppState>,
+    group_id: i64,
+) -> Result<Vec<BatchRow>, String> {
     let db = state.db.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let view = match ctl.core_test(&session, "https://www.google.com/generate_204", 8.0) {
-            Ok(ms) => MeasureView {
-                delay_ms: Some(ms),
-                error: None,
-            },
-            Err(msg) => MeasureView {
-                delay_ms: None,
-                error: Some(msg),
-            },
-        };
-        // persist so results survive redraws / restarts
-        if let Ok(db) = db.lock() {
-            let _ = db.upsert_latency(
-                group_id,
-                &node_id2,
-                view.delay_ms,
-                view.error.as_deref(),
-                &unix_now_secs(),
-            );
-        }
-        view
+    let ctl = state.ctl.clone();
+    let rows = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<core::UrlTestRow>, String> {
+        let rows = run_urltest(&db, &ctl, group_id, None)?;
+        persist_rows(&db, group_id, &rows);
+        Ok(rows)
     })
     .await
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())??;
+    Ok(rows
+        .into_iter()
+        .map(|r| BatchRow {
+            node_id: r.id,
+            delay_ms: r.delay_ms,
+            error: r.error,
+        })
+        .collect())
 }
 
 /// Persisted latency results for a group (shown until re-tested).
@@ -951,6 +999,7 @@ pub fn run() {
             settings_set,
             set_node_current,
             measure_node,
+            measure_batch,
             core_status,
             core_start,
             core_stop,

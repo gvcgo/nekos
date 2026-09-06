@@ -40,6 +40,15 @@ pub struct NodeMeta {
 }
 
 #[derive(Deserialize, Serialize, Clone)]
+pub struct UrlTestRow {
+    pub id: String,
+    #[serde(default)]
+    pub delay_ms: Option<i64>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, Clone)]
 pub struct ImportResult {
     pub nodes: Vec<NodeMeta>,
     pub errors: Vec<ParseError>,
@@ -171,6 +180,15 @@ impl CoreCtl {
             .get("delay_ms")
             .and_then(|v| v.as_i64())
             .ok_or_else(|| format!("core test: no delay_ms in {value}"))
+    }
+
+    /// `nekos-core urltest`: batch-probe every entry in one instance
+    /// (v2rayN semantics). Returns rows in entry order.
+    pub fn urltest(&self, session_json: &str) -> Result<Vec<UrlTestRow>, String> {
+        let out = self.run(&["urltest"], session_json.as_bytes())?;
+        let rows: Vec<UrlTestRow> = serde_json::from_slice(&out)
+            .map_err(|e| format!("core urltest output: {e}"))?;
+        Ok(rows)
     }
 
     /// `nekos-core parse` over arbitrary link/subscription text.

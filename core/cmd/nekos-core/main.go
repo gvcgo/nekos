@@ -18,6 +18,7 @@ import (
 	"nekos/core/internal/build"
 	"nekos/core/internal/link"
 	"nekos/core/internal/run"
+	"nekos/core/internal/urltest"
 )
 
 func main() {
@@ -35,6 +36,8 @@ func main() {
 		err = cmdRun()
 	case "test":
 		err = cmdTest(os.Args[2:])
+	case "urltest":
+		err = cmdURLTest()
 	case "version":
 		err = cmdVersion()
 	case "help", "-h", "--help":
@@ -64,6 +67,10 @@ usage:
                                  read a session JSON on stdin, measure TCP
                                  latency through the selected node, print
                                  {"delay_ms": N}
+  nekos-core urltest             read {"entries":[...], "url"?, "timeout_s"?}
+                                 on stdin; batch-probe all entries in one
+                                 sing-box instance (urltest group, HTTP
+                                 generate_204), print per-node delays
   nekos-core version             print version and embedded sing-box module
 `)
 }
@@ -188,6 +195,27 @@ func cmdTest(args []string) error {
 		"target":    target,
 		"timeout_s": timeout.Seconds(),
 	})
+	fmt.Println(string(out))
+	return nil
+}
+
+func cmdURLTest() error {
+	data, err := readStdin()
+	if err != nil {
+		return err
+	}
+	var sess urltest.Session
+	if err := json.Unmarshal(data, &sess); err != nil {
+		return fmt.Errorf("decode urltest session: %w", err)
+	}
+	results, err := urltest.Probe(&sess)
+	if err != nil {
+		return err
+	}
+	out, err := json.MarshalIndent(results, "", "  ")
+	if err != nil {
+		return err
+	}
 	fmt.Println(string(out))
 	return nil
 }

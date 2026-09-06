@@ -187,6 +187,17 @@ export function latencyList(groupId: number): Promise<LatencyRow[]> {
   return invoke<LatencyRow[]>("latency_list", { groupId });
 }
 
+export interface BatchRow {
+  node_id: string;
+  delay_ms?: number | null;
+  error?: string | null;
+}
+
+/** v2rayN-style: probe the whole group in one core instance, concurrently. */
+export function measureBatch(groupId: number): Promise<BatchRow[]> {
+  return invoke<BatchRow[]>("measure_batch", { groupId });
+}
+
 export interface CoreStatusView {
   running: boolean;
   started_at?: string;
