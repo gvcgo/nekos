@@ -756,9 +756,30 @@ async fn copy_nodes(
     let db = state.db.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
-        let (inserted, duplicated) = db
-            .copy_group_nodes(source_group_id, target_group_id, &node_ids)
-            .map_err(|e| e.to_string())?;
+        let mut real = Vec::new();
+        let mut strats = Vec::new();
+        for id in &node_ids {
+            if let Some(sid) = id.strip_prefix("strat:") {
+                if let Ok(sid) = sid.parse::<i64>() {
+                    strats.push(sid);
+                    continue;
+                }
+            }
+            real.push(id.clone());
+        }
+        let (mut inserted, mut duplicated) = if real.is_empty() {
+            (0, 0)
+        } else {
+            db.copy_group_nodes(source_group_id, target_group_id, &real)
+                .map_err(|e| e.to_string())?
+        };
+        for sid in strats {
+            if db.add_strategy_host(sid, target_group_id).map_err(|e| e.to_string())? {
+                inserted += 1;
+            } else {
+                duplicated += 1;
+            }
+        }
         Ok(CopyView { inserted, duplicated })
     })
     .await

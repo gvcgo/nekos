@@ -166,6 +166,11 @@ impl Db {
                 tested_at TEXT NOT NULL,
                 PRIMARY KEY (group_id, node_id)
             );
+            CREATE TABLE IF NOT EXISTS strategy_hosts (
+                strategy_id INTEGER NOT NULL,
+                host_group  INTEGER NOT NULL,
+                PRIMARY KEY (strategy_id, host_group)
+            );
             INSERT OR IGNORE INTO groups (id, name) VALUES (1, '默认分组');",
         )?;
         self.ensure_column("groups", "user_agent", "TEXT")?;
@@ -266,17 +271,35 @@ impl Db {
             "INSERT INTO groups (name, kind, members, host_group) VALUES (?1, ?2, ?3, ?4)",
             params![name, kind, members_json, host_group],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        let id = self.conn.last_insert_rowid();
+        self.conn.execute(
+            "INSERT OR IGNORE INTO strategy_hosts (strategy_id, host_group) VALUES (?1, ?2)",
+            params![id, host_group],
+        )?;
+        Ok(id)
     }
 
-    /// Strategy groups visible as pseudo-nodes inside the host group.
-    pub fn strategies_for(&self, host_group: i64) -> rusqlite::Result<Vec<Group>> {
+    /// Mount an existing strategy group into another host group (so the
+    /// pseudo-node appears there too). Returns false when already mounted.
+    pub fn add_strategy_host(&self, strategy_id: i64, host_group: i64) -> rusqlite::Result<bool> {
+        if host_group == 0 || strategy_id == host_group {
+            return Ok(false);
+        }
+        let inserted = self.conn.execute(
+            "INSERT OR IGNORE INTO strategy_hosts (strategy_id, host_group) VALUES (?1, ?2)",
+            params![strategy_id, host_group],
+        )?;
+        Ok(inserted > 0)
+    }
+
+    /// All strategy groups (used to filter hosts in Rust).
+    pub fn list_strategies(&self) -> rusqlite::Result<Vec<Group>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, sub_url, user_agent, extra_headers, sub_userinfo, updated_at,
                     last_update_epoch, kind, members
-             FROM groups WHERE host_group = ?1 AND kind LIKE 'strategy%' ORDER BY id",
+             FROM groups WHERE kind LIKE 'strategy%' ORDER BY id",
         )?;
-        let rows = stmt.query_map(params![host_group], |row| {
+        let rows = stmt.query_map([], |row| {
             Ok(Group {
                 id: row.get(0)?,
                 name: row.get(1)?,
@@ -291,6 +314,33 @@ impl Db {
             })
         })?;
         rows.collect()
+    }
+
+    /// Strategy groups visible as pseudo-nodes inside the host group
+    /// (multi-host table plus the legacy single-host column).
+    pub fn strategies_for(&self, host_group: i64) -> rusqlite::Result<Vec<Group>> {
+        let hosted: std::collections::HashSet<i64> = self
+            .conn
+            .prepare("SELECT strategy_id FROM strategy_hosts WHERE host_group = ?1")?
+            .query_map(params![host_group], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        let legacy: std::collections::HashSet<i64> = self
+            .conn
+            .prepare("SELECT id FROM groups WHERE host_group = ?1 AND kind LIKE 'strategy%'")?
+            .query_map(params![host_group], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        let mut all = self.list_strategies()?;
+        all.retain(|g| hosted.contains(&g.id) || legacy.contains(&g.id));
+        Ok(all)
+    }
+
+    /// Remove a strategy group from one host group.
+    pub fn remove_strategy_host(&self, strategy_id: i64, host_group: i64) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "DELETE FROM strategy_hosts WHERE strategy_id = ?1 AND host_group = ?2",
+            params![strategy_id, host_group],
+        )?;
+        Ok(())
     }
 
     pub fn rename_group(&self, id: i64, name: &str) -> rusqlite::Result<()> {
@@ -310,9 +360,19 @@ impl Db {
             "DELETE FROM latency WHERE group_id = ?1",
             params![id],
         )?;
-        // drop strategy nodes hosted by this group
+        // unmount strategy pseudo-nodes hosted here; the strategy groups
+        // themselves survive unless deleted explicitly
         self.conn.execute(
-            "DELETE FROM groups WHERE host_group = ?1 AND kind LIKE 'strategy%'",
+            "DELETE FROM strategy_hosts WHERE host_group = ?1",
+            params![id],
+        )?;
+        self.conn.execute(
+            "UPDATE groups SET host_group = NULL WHERE host_group = ?1",
+            params![id],
+        )?;
+        // deleting a strategy group also removes its mounts
+        self.conn.execute(
+            "DELETE FROM strategy_hosts WHERE strategy_id = ?1",
             params![id],
         )?;
         self.conn.execute("DELETE FROM groups WHERE id = ?1", params![id])?;
@@ -665,9 +725,18 @@ mod tests {
         // empty members degrade to empty
         let s2 = db.create_strategy(a, "空", "strategy", "[]").unwrap();
         assert!(db.nodes_for_group(s2).unwrap().is_empty());
-        // deleting the host group removes hosted strategies
+        // mount into a second host; duplicates are rejected
+        assert!(db.add_strategy_host(s, b).unwrap());
+        assert!(!db.add_strategy_host(s, b).unwrap());
+        assert!(db.strategies_for(b).unwrap().iter().any(|g| g.id == s));
+        // deleting one host keeps the strategy (mounted in others)
         db.delete_group(a).unwrap();
-        assert!(db.group(s).unwrap().is_none());
+        assert!(db.group(s).unwrap().is_some());
+        assert!(db.strategies_for(a).unwrap().is_empty());
+        assert!(db.strategies_for(b).unwrap().iter().any(|g| g.id == s));
+        // deleting the strategy itself clears its mounts
+        db.delete_group(s).unwrap();
+        assert!(db.strategies_for(b).unwrap().is_empty());
     }
 
     #[test]

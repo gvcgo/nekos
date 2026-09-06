@@ -5,6 +5,7 @@ import {
   coreStatus,
   coreStop,
   coreStart,
+  copyNodes,
   createGroup,
   createStrategyGroup,
   deleteGroup,
@@ -227,6 +228,34 @@ async function deleteStrategyNode(n: Node) {
   if (!sid || !confirm(`删除策略组「${n.remark}」？`)) return;
   await deleteGroup(sid);
   await reloadNodes();
+}
+
+// join (mount) a strategy node into another group
+const joinOf = ref<Node | null>(null);
+const joinTarget = ref<number | null>(null);
+
+function openJoin(n: Node) {
+  joinOf.value = n;
+  const others = groups.value.filter(
+    (g) => (g.kind ?? "normal") === "normal" && g.id !== currentGroupId(),
+  );
+  joinTarget.value = others[0]?.id ?? null;
+}
+
+async function doJoin() {
+  const n = joinOf.value;
+  if (!n || joinTarget.value == null) {
+    err.value = "没有可加入的分组";
+    return;
+  }
+  try {
+    const out = await copyNodes(currentGroupId(), joinTarget.value, [n.id]);
+    const targetName = groups.value.find((g) => g.id === joinTarget.value)?.name ?? "";
+    shareMsg.value = `已将「${n.remark}」加入分组「${targetName}」${out.duplicated ? "（已存在）" : ""}`;
+    joinOf.value = null;
+  } catch (e) {
+    err.value = String(e);
+  }
 }
 
 async function removeGroup() {
@@ -486,7 +515,10 @@ onMounted(loadAll);
                 <button class="ghost" title="二维码分享" @click="showNodeQr(n.group_id, n.id, n.remark)">QR</button>
                 <button v-if="!isVirtualCurrent" class="ghost danger" @click="removeNode(n.id)">删除</button>
               </template>
-              <button v-else class="ghost danger" title="删除该策略组" @click="deleteStrategyNode(n)">✕策略</button>
+              <template v-else>
+                <button class="ghost" title="把该策略组加入其它分组（作为伪节点）" @click="openJoin(n)">＋入组</button>
+                <button class="ghost danger" title="删除该策略组" @click="deleteStrategyNode(n)">✕策略</button>
+              </template>
             </td>
           </tr>
         </tbody>
@@ -512,6 +544,23 @@ onMounted(loadAll);
           <span class="spacer"></span>
           <button class="ghost" @click="stratOpen = false">取消</button>
           <button :disabled="stratBusy" @click="createStrategy">{{ stratBusy ? "创建中…" : "创建" }}</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- join strategy into another group -->
+    <div v-if="joinOf" class="dialog-mask" @click.self="joinOf = null">
+      <div class="dialog">
+        <h3>把「{{ joinOf.remark }}」加入分组</h3>
+        <div class="dialog-row"><label>目标分组</label>
+          <select v-model="joinTarget" class="inp sel">
+            <option v-for="g in groups.filter((x) => (x.kind ?? 'normal') === 'normal' && x.id !== currentGroupId())" :key="g.id" :value="g.id">{{ g.name }}</option>
+          </select>
+        </div>
+        <div class="dialog-btns">
+          <span class="spacer"></span>
+          <button class="ghost" @click="joinOf = null">取消</button>
+          <button :disabled="joinTarget == null" @click="doJoin">加入</button>
         </div>
       </div>
     </div>
