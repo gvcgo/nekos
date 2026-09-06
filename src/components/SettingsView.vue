@@ -144,7 +144,7 @@ async function save() {
           <option v-for="opt in minuteOptions" :key="opt.m" :value="opt.m">{{ opt.label }}</option>
         </select>
       </div>
-      <p class="note">系统代理独立开关在「服务」页工具栏：内核运行中可随时开启/关闭，退出自动还原。</p>
+      <p class="note">系统代理独立开关在「分组」页工具栏：内核运行中可随时开启/关闭，退出自动还原。</p>
 
       <div class="row">
         <button :disabled="saving" @click="save">{{ saving ? "保存中…" : "保存" }}</button>

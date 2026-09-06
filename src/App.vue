@@ -15,7 +15,7 @@ const proxyOn = ref(false);
 const timer = ref<number | undefined>(undefined);
 
 const pages: { id: Page; label: string }[] = [
-  { id: "servers", label: "服务" },
+  { id: "servers", label: "分组" },
   { id: "subscriptions", label: "订阅" },
   { id: "logs", label: "日志" },
   { id: "settings", label: "设置" },

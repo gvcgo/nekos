@@ -462,36 +462,38 @@ onMounted(loadAll);
 <template>
   <div class="servers-page">
     <div class="toolbar">
-      <h1>服务</h1>
-
-      <select class="group-select" :value="currentGroupId()" @change="switchGroup(Number(($event.target as HTMLSelectElement).value))">
-        <option v-for="g in groups.filter((x) => (x.kind ?? 'normal') === 'normal')" :key="g.id" :value="g.id">{{ g.name }}</option>
-      </select>
-      <span class="group-ops" title="管理分组">
-        <button class="ghost mini" @click="newGroup">＋ 新建</button>
-        <button class="ghost mini" title="按成员分组延迟自动选最快的组（v2rayN 策略组）" @click="openStrategyDialog">＋策略组</button>
-        <button v-if="currentGroupId() !== 1" class="ghost mini" @click="renameCurrentGroup">✎ 改名</button>
-        <button v-if="currentGroupId() !== 1" class="ghost mini danger" title="删除分组（含节点）" @click="removeGroup">✕ 删除</button>
-      </span>
-
-      <span class="spacer"></span>
-
-      <label class="chip" :class="status.running ? 'on' : 'off'">
-        <span class="dot"></span>
-        {{ status.running ? `运行中 · 系统代理${status.proxy_enabled ? "开" : "关"}` : "已停止" }}
-      </label>
-      <select class="group-select" :value="settings?.mode ?? 'global'" title="分流模式" @change="changeMode(($event.target as HTMLSelectElement).value)">
-        <option value="global">全局代理</option>
-        <option value="rule">规则(绕过大陆)</option>
-        <option value="direct">直连</option>
-      </select>
-      <label class="proxy-toggle" title="内核运行中可随时开关系统代理">
-        <input type="checkbox" :checked="status.proxy_enabled" :disabled="!status.running" @change="toggleProxy(($event.target as HTMLInputElement).checked)" />
-        系统代理
-      </label>
-      <button :disabled="startBusy || !visibleNodes.length" @click="toggleStart">
-        {{ status.running ? "停止" : startBusy ? "启动中…" : "启动" }}
-      </button>
+      <div class="trow">
+        <h1>分组</h1>
+        <select class="group-select" :value="currentGroupId()" @change="switchGroup(Number(($event.target as HTMLSelectElement).value))">
+          <option v-for="g in groups.filter((x) => (x.kind ?? 'normal') === 'normal')" :key="g.id" :value="g.id">{{ g.name }}</option>
+        </select>
+        <span class="group-ops" title="管理分组">
+          <button class="ghost mini" @click="newGroup">＋ 新建</button>
+          <button class="ghost mini" title="按成员分组延迟自动选最快的组（v2rayN 策略组）" @click="openStrategyDialog">＋策略组</button>
+          <button v-if="currentGroupId() !== 1" class="ghost mini" @click="renameCurrentGroup">✎ 改名</button>
+          <button v-if="currentGroupId() !== 1" class="ghost mini danger" title="删除分组（含节点）" @click="removeGroup">✕ 删除</button>
+        </span>
+        <span class="spacer"></span>
+      </div>
+      <div class="trow trow-ops">
+        <label class="chip" :class="status.running ? 'on' : 'off'">
+          <span class="dot"></span>
+          {{ status.running ? `运行中 · 系统代理${status.proxy_enabled ? "开" : "关"}` : "已停止" }}
+        </label>
+        <select class="group-select" :value="settings?.mode ?? 'global'" title="分流模式" @change="changeMode(($event.target as HTMLSelectElement).value)">
+          <option value="global">全局代理</option>
+          <option value="rule">规则(绕过大陆)</option>
+          <option value="direct">直连</option>
+        </select>
+        <label class="proxy-toggle" title="内核运行中可随时开关系统代理">
+          <input type="checkbox" :checked="status.proxy_enabled" :disabled="!status.running" @change="toggleProxy(($event.target as HTMLInputElement).checked)" />
+          系统代理
+        </label>
+        <button class="primary" :disabled="startBusy || !visibleNodes.length" @click="toggleStart">
+          {{ status.running ? "停止" : startBusy ? "启动中…" : "启动" }}
+        </button>
+        <span class="spacer"></span>
+      </div>
     </div>
 
     <div class="msgbar">
@@ -617,8 +619,14 @@ onMounted(loadAll);
 
 <style scoped>
 .servers-page { display: flex; flex-direction: column; gap: 12px; }
-.toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.toolbar h1 { margin: 0 8px 0 0; font-size: 20px; }
+.toolbar { display: flex; flex-direction: column; gap: 8px; }
+.trow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.trow-ops { gap: 12px; }
+.trow h1 { margin: 0 8px 0 0; font-size: 20px; }
+button.primary {
+  border: 0; border-radius: 6px; background: var(--accent); color: #fff;
+  padding: 6px 16px; font-size: 13px; cursor: pointer; white-space: nowrap;
+}
 .spacer { flex: 1; }
 button {
   border: 0; border-radius: 6px; background: var(--accent); color: #fff;

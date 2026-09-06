@@ -114,7 +114,7 @@ function toggleCopyAll(on: boolean) {
 
 async function doCopyToGroup() {
   if (!copyOf.value || copyTarget.value == null) {
-    err.value = "请先创建目标分组（服务页「＋新建」）";
+    err.value = "请先创建目标分组（分组页「＋新建」）";
     return;
   }
   const ids = copyNodesList.value.filter((n) => copySel.value[n.id]).map((n) => n.id);
