@@ -1,28 +1,19 @@
 // Package urltest implements v2rayN-style latency probing for a whole node
 // batch: ONE sing-box instance hosts every candidate outbound, and each
-// node is probed concurrently through the experimental Clash API delay
-// endpoint (which runs the core's own urltest.URLTest against the default
-// http://www.gstatic.com/generate_204). No per-node cold start, no local
-// socks hop, no extra TLS round trip.
+// node is probed concurrently through sing-box's own urltest.URLTest over
+// plain HTTP (http://www.gstatic.com/generate_204) — no TLS round trip,
+// matching how v2rayN measures sing-box nodes. Low default concurrency
+// avoids tripping per-IP session limits on single-entry servers.
 package urltest
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"net"
-	"net/http"
-	"os"
-	"path/filepath"
-	"strconv"
 	"time"
 
 	box "github.com/sagernet/sing-box"
-	_ "github.com/sagernet/sing-box/experimental" // registers services
-	_ "github.com/sagernet/sing-box/experimental/cachefile"
-	_ "github.com/sagernet/sing-box/experimental/clashapi"
+	"github.com/sagernet/sing-box/common/urltest"
 	"github.com/sagernet/sing-box/include"
 	"github.com/sagernet/sing-box/option"
 	singjson "github.com/sagernet/sing/common/json"
@@ -30,7 +21,7 @@ import (
 
 const (
 	DefaultURL       = "http://www.gstatic.com/generate_204"
-	probeConcurrency = 4 // high concurrency trips per-IP session limits
+	probeConcurrency = 4 // bursts against one entry server trip session limits
 )
 
 // Entry mirrors build.Entry: a stable id plus its outbound options JSON.
@@ -42,8 +33,9 @@ type Entry struct {
 // Session is the request payload read on stdin.
 type Session struct {
 	Entries  []Entry `json:"entries"`
+	URL      string  `json:"url,omitempty"`
 	TimeoutS int     `json:"timeout_s,omitempty"` // per-node seconds, default 5
-	// Concurrency caps simultaneous delay probes (default 32).
+	// Concurrency caps simultaneous probes (default 4).
 	Concurrency int `json:"concurrency,omitempty"`
 }
 
@@ -56,31 +48,25 @@ type Result struct {
 
 func tagFor(id string) string { return "out-" + id }
 
-// Probe hosts all entries in one instance and concurrently delays each.
+// Probe hosts all entries in one instance and concurrently URL-tests each.
 func Probe(sess *Session) ([]Result, error) {
 	if len(sess.Entries) == 0 {
 		return nil, fmt.Errorf("no entries to test")
+	}
+	testURL := sess.URL
+	if testURL == "" {
+		testURL = DefaultURL
 	}
 	timeout := time.Duration(sess.TimeoutS) * time.Second
 	if sess.TimeoutS <= 0 {
 		timeout = 5 * time.Second
 	}
 
-	listen, err := freeTCPPort()
-	if err != nil {
-		return nil, err
-	}
-	tokenBytes := make([]byte, 16)
-	_, _ = rand.Read(tokenBytes)
-	secret := hex.EncodeToString(tokenBytes)
-	cachePath := filepath.Join(os.TempDir(), fmt.Sprintf("nekos-urltest-%d.db", time.Now().UnixNano()))
-	defer os.Remove(cachePath)
-
 	outbounds := []any{
 		map[string]any{"type": "direct", "tag": "direct"},
 		map[string]any{"type": "block", "tag": "block"},
 	}
-	tags := make([]string, 0, len(sess.Entries))
+	order := make([]string, 0, len(sess.Entries))
 	idByTag := map[string]string{}
 	for _, e := range sess.Entries {
 		var out map[string]any
@@ -90,24 +76,13 @@ func Probe(sess *Session) ([]Result, error) {
 		tag := tagFor(e.ID)
 		out["tag"] = tag
 		outbounds = append(outbounds, out)
-		tags = append(tags, tag)
+		order = append(order, tag)
 		idByTag[tag] = e.ID
 	}
 
-	controller := net.JoinHostPort("127.0.0.1", strconv.Itoa(listen))
 	cfg := map[string]any{
 		"outbounds": outbounds,
 		"route":     map[string]any{"final": "direct"},
-		"experimental": map[string]any{
-			"cache_file": map[string]any{
-				"enabled": true,
-				"path":    cachePath,
-			},
-			"clash_api": map[string]any{
-				"external_controller": controller,
-				"secret":              secret,
-			},
-		},
 	}
 	raw, err := json.Marshal(cfg)
 	if err != nil {
@@ -128,75 +103,58 @@ func Probe(sess *Session) ([]Result, error) {
 	}
 	defer instance.Close()
 
-	baseURL := fmt.Sprintf("http://%s", controller)
-	client := &http.Client{Timeout: timeout + 5*time.Second}
-
-	results := make([]Result, len(sess.Entries))
-	indexByID := make(map[string]int, len(sess.Entries))
-	for i, e := range sess.Entries {
-		indexByID[e.ID] = i
-		results[i] = Result{ID: e.ID}
-	}
-
-	// Concurrent delay probes (bounded lanes). High concurrency against a
-	// single-entry server can trip per-IP session limits, so allow tuning.
+	results := make([]Result, 0, len(order))
 	work := make(chan string)
 	lanes := probeConcurrency
-	if sess.Concurrency > 0 && sess.Concurrency < lanes {
+	if sess.Concurrency > 0 {
 		lanes = sess.Concurrency
 	}
-	if lanes > len(sess.Entries) {
-		lanes = len(sess.Entries)
+	if lanes > len(order) {
+		lanes = len(order)
 	}
-	done := make(chan struct{})
+	done := make(chan []Result, lanes)
 	for range lanes {
 		go func() {
-			defer func() { done <- struct{}{} }()
+			var mine []Result
+			defer func() { done <- mine }()
 			for tag := range work {
-				req, err := http.NewRequest(http.MethodGet,
-					fmt.Sprintf("%s/proxies/%s/delay?timeout=%d", baseURL, tag, timeout.Milliseconds()), nil)
+				id := idByTag[tag]
+				outbound, loaded := instance.Outbound().Outbound(tag)
+				if !loaded {
+					mine = append(mine, Result{ID: id, Error: "outbound missing"})
+					continue
+				}
+				probeCtx, cancel := context.WithTimeout(ctx, timeout)
+				delay, err := urltest.URLTest(probeCtx, testURL, outbound)
+				cancel()
 				if err != nil {
+					mine = append(mine, Result{ID: id, Error: err.Error()})
 					continue
 				}
-				req.Header.Set("Authorization", "Bearer "+secret)
-				resp, err := client.Do(req)
-				if err != nil {
-					idx := indexByID[idByTag[tag]]
-					results[idx] = Result{ID: idByTag[tag], Error: err.Error()}
-					continue
-				}
-				if resp.StatusCode == http.StatusOK {
-					var body struct {
-						Delay int64 `json:"delay"`
-					}
-					_ = json.NewDecoder(resp.Body).Decode(&body)
-					resp.Body.Close()
-					idx := indexByID[idByTag[tag]]
-					d := body.Delay
-					results[idx] = Result{ID: idByTag[tag], DelayMs: &d}
-					continue
-				}
-				resp.Body.Close()
-				idx := indexByID[idByTag[tag]]
-				results[idx] = Result{ID: idByTag[tag], Error: "unavailable"}
+				ms := int64(delay)
+				mine = append(mine, Result{ID: id, DelayMs: &ms})
 			}
 		}()
 	}
-	for _, tag := range tags {
+	for _, tag := range order {
 		work <- tag
 	}
 	close(work)
 	for range lanes {
-		<-done
+		results = append(results, <-done...)
 	}
-	return results, nil
-}
 
-func freeTCPPort() (int, error) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, err
+	byID := make(map[string]Result, len(results))
+	for _, r := range results {
+		byID[r.ID] = r
 	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port, nil
+	sorted := make([]Result, 0, len(order))
+	for _, e := range sess.Entries {
+		if r, ok := byID[e.ID]; ok {
+			sorted = append(sorted, r)
+		} else {
+			sorted = append(sorted, Result{ID: e.ID, Error: "untested"})
+		}
+	}
+	return sorted, nil
 }
