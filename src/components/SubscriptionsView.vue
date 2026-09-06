@@ -665,10 +665,10 @@ th { font-size: 11px; text-transform: uppercase; opacity: 0.7; }
 .auto-due { color: #f59e0b; }
 .ell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .list table { table-layout: fixed; }
-th.c-name { width: 20%; }
-th.c-url { width: 36%; }
+th.c-name { width: 26%; }
+th.c-url { width: 22%; }
 th.c-meta { width: 12%; }
-th.c-ops { width: 20%; }
+th.c-ops { width: 28%; }
 .c-ops button { margin-left: 4px; }
 .icon-btn { font-size: 12px; line-height: 1; padding: 2px 5px; }
 tr:hover td { background: rgba(59, 130, 246, 0.04); }
