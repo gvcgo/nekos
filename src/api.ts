@@ -198,6 +198,20 @@ export function measureBatch(groupId: number): Promise<BatchRow[]> {
   return invoke<BatchRow[]>("measure_batch", { groupId });
 }
 
+export interface CopyView {
+  inserted: number;
+  duplicated: number;
+}
+
+/** Copy selected nodes (by id) from a source group into another group. */
+export function copyNodes(
+  sourceGroupId: number,
+  targetGroupId: number,
+  nodeIds: string[],
+): Promise<CopyView> {
+  return invoke<CopyView>("copy_nodes", { sourceGroupId, targetGroupId, nodeIds });
+}
+
 export interface CoreStatusView {
   running: boolean;
   started_at?: string;

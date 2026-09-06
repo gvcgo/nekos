@@ -359,6 +359,47 @@ impl Db {
         rows.collect()
     }
 
+    /// Copy nodes (by id) from one group into another. Existing target
+    /// nodes with the same id are left untouched. Returns
+    /// (inserted, skipped_duplicates).
+    pub fn copy_group_nodes(
+        &self,
+        source_group: i64,
+        target_group: i64,
+        node_ids: &[String],
+    ) -> rusqlite::Result<(usize, usize)> {
+        if source_group == target_group {
+            return Ok((0, node_ids.len()));
+        }
+        let source: Vec<Node> = self
+            .list_nodes(source_group)?
+            .into_iter()
+            .filter(|n| node_ids.contains(&n.id))
+            .collect();
+        let existing: std::collections::HashSet<String> = self
+            .list_nodes(target_group)?
+            .into_iter()
+            .map(|n| n.id)
+            .collect();
+        let mut inserted = 0usize;
+        let mut duplicated = 0usize;
+        {
+            let mut stmt = self.conn.prepare_cached(
+                "INSERT OR IGNORE INTO nodes (id, group_id, type, remark, out)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+            for n in &source {
+                if existing.contains(&n.id) {
+                    duplicated += 1;
+                    continue;
+                }
+                stmt.execute(params![n.id, target_group, n.r#type, n.remark, n.out])?;
+                inserted += 1;
+            }
+        }
+        Ok((inserted, duplicated))
+    }
+
     // ---- settings (single JSON blob) ----
 
     pub fn load_settings(&self) -> Settings {

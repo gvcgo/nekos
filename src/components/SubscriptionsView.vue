@@ -1,13 +1,16 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import {
+  copyNodes,
   createGroup,
   deleteGroup,
   groupsList,
+  nodesList,
   subscribe,
   subscriptionEdit,
   subscriptionRefresh,
   type Group,
+  type Node,
   type SubUserInfo,
   type SubscribeResult,
 } from "../api";
@@ -17,6 +20,7 @@ const emit = defineEmits<{ (e: "saved", groupId: number): void }>();
 // ---- existing subscription list ----------------------------------------
 
 const subs = ref<Group[]>([]);
+const allGroups = ref<Group[]>([]);
 const refreshing = ref<Record<number, boolean>>({});
 const err = ref("");
 const msg = ref("");
@@ -27,6 +31,67 @@ const subscriptions = computed(() =>
 
 async function loadSubs() {
   subs.value = await groupsList();
+  allGroups.value = subs.value;
+}
+
+// ---- copy subscription nodes into a group ----
+
+const copyOf = ref<Group | null>(null);
+const copyNodesList = ref<Node[]>([]);
+const copySel = ref<Record<string, boolean>>({});
+const copyTarget = ref<number | null>(null);
+const copyBusy = ref(false);
+
+function targetGroups(): Group[] {
+  if (!copyOf.value) return [];
+  return allGroups.value.filter((g) => g.id !== copyOf.value!.id);
+}
+
+async function openCopy(g: Group) {
+  copyOf.value = g;
+  copyNodesList.value = await nodesList(g.id);
+  const sel: Record<string, boolean> = {};
+  for (const n of copyNodesList.value) sel[n.id] = true;
+  copySel.value = sel;
+  const t = targetGroups();
+  copyTarget.value = t.length ? t[0].id : null;
+  err.value = "";
+}
+
+function closeCopy() {
+  copyOf.value = null;
+  copyNodesList.value = [];
+  copyTarget.value = null;
+}
+
+function toggleCopyAll(on: boolean) {
+  const sel: Record<string, boolean> = {};
+  for (const n of copyNodesList.value) sel[n.id] = on;
+  copySel.value = sel;
+}
+
+async function doCopyToGroup() {
+  if (!copyOf.value || copyTarget.value == null) {
+    err.value = "请先创建目标分组（服务页「＋新建」）";
+    return;
+  }
+  const ids = copyNodesList.value.filter((n) => copySel.value[n.id]).map((n) => n.id);
+  if (!ids.length) {
+    err.value = "没有勾选任何节点";
+    return;
+  }
+  copyBusy.value = true;
+  err.value = "";
+  try {
+    const out = await copyNodes(copyOf.value.id, copyTarget.value, ids);
+    const targetName = allGroups.value.find((g) => g.id === copyTarget.value)?.name ?? "";
+    msg.value = `已将 ${out.inserted} 个节点加入分组「${targetName}」${out.duplicated ? `，${out.duplicated} 个已存在跳过` : ""}`;
+    closeCopy();
+  } catch (e) {
+    err.value = String(e);
+  } finally {
+    copyBusy.value = false;
+  }
 }
 
 function userInfo(g: Group): SubUserInfo | null {
@@ -50,7 +115,7 @@ function fmtBytes(n: number): string {
 }
 
 async function delSub(g: Group) {
-  if (!confirm(`删除订阅「${g.name}」及其节点？`)) return;
+  if (!confirm(`删除订阅「${g.name}」及其自带分组节点？\n已加入其它分组的节点副本会保留。`)) return;
   err.value = "";
   try {
     await deleteGroup(g.id);
@@ -240,6 +305,7 @@ onMounted(loadSubs);
               <td class="mono">{{ g.updated_at ?? "—" }}</td>
               <td class="ops">
                 <button class="ghost mini" @click="startEdit(g)">编辑</button>
+                <button class="ghost mini" @click="openCopy(g)">加入分组…</button>
                 <button class="ghost mini" :disabled="refreshing[g.id]" @click="refreshSub(g)">
                   {{ refreshing[g.id] ? "更新中…" : "更新" }}
                 </button>
@@ -273,7 +339,38 @@ onMounted(loadSubs);
         </tbody>
       </table>
     </section>
-    <div v-else class="empty">还没有订阅组 — 在下方「抓取新订阅」创建。</div>
+    <div class="empty" v-if="!subscriptions.length && !copyOf">还没有订阅组 — 在下方「抓取新订阅」创建。</div>
+
+    <!-- copy subscription nodes into a group -->
+    <div v-if="copyOf" class="dialog-mask" @click.self="closeCopy">
+      <div class="dialog">
+        <h3>将「{{ copyOf.name }}」的节点加入分组</h3>
+        <div class="dialog-row">
+          <label>目标分组</label>
+          <select v-model="copyTarget" class="inp sel">
+            <option v-for="g in targetGroups()" :key="g.id" :value="g.id">{{ g.name }}</option>
+          </select>
+        </div>
+        <div class="dialog-actions">
+          <span class="spacer"></span>
+          <label class="check"><input type="checkbox" :checked="copyNodesList.every((n) => copySel[n.id])" @change="toggleCopyAll(($event.target as HTMLInputElement).checked)" /> 全选</label>
+        </div>
+        <div class="node-pick">
+          <label v-for="n in copyNodesList" :key="n.id" class="pick">
+            <input type="checkbox" v-model="copySel[n.id]" />
+            <code>{{ n.type }}</code> {{ n.remark }}
+          </label>
+        </div>
+        <div class="dialog-btns">
+          <span v-if="err" class="err">{{ err }}</span>
+          <span class="spacer"></span>
+          <button class="ghost" @click="closeCopy">取消</button>
+          <button :disabled="copyBusy || copyTarget == null" @click="doCopyToGroup">
+            {{ copyBusy ? "加入中…" : `加入 ${copyNodesList.filter((n) => copySel[n.id]).length} 个节点` }}
+          </button>
+        </div>
+      </div>
+    </div>
 
     <!-- new subscription -->
     <section class="new">
@@ -340,4 +437,27 @@ button:disabled { opacity: 0.5; cursor: default; }
 .new-form { display: flex; flex-direction: column; gap: 8px; max-width: 760px; }
 .row { display: flex; gap: 8px; }
 .preview { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12px; }
+.dialog-mask {
+  position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45);
+  display: flex; align-items: center; justify-content: center; z-index: 50;
+}
+.dialog {
+  background: var(--bg, #f5f6f8); color: var(--fg, #1f2329);
+  border: 1px solid var(--border); border-radius: 12px; padding: 16px;
+  width: min(620px, 92vw); max-height: 80vh; display: flex; flex-direction: column; gap: 10px;
+}
+.dialog h3 { margin: 0; font-size: 15px; }
+.dialog-row { display: flex; align-items: center; gap: 10px; }
+.dialog-row label { font-size: 12px; opacity: 0.85; width: 70px; flex: none; }
+.sel { max-width: 260px; }
+.dialog-actions, .dialog-btns { display: flex; align-items: center; gap: 10px; }
+.dialog-actions .spacer, .dialog-btns .spacer { flex: 1; }
+.check { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer; }
+.node-pick {
+  flex: 1; overflow: auto; border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px;
+  display: flex; flex-direction: column; gap: 2px; min-height: 120px;
+}
+.pick { display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; }
+.pick code { font-size: 11px; }
+
 </style>

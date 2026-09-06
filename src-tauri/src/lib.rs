@@ -582,6 +582,35 @@ async fn measure_batch(
         .collect())
 }
 
+/// Copy selected nodes from one group into another (snapshot semantics).
+#[derive(Serialize)]
+pub struct CopyView {
+    pub inserted: usize,
+    pub duplicated: usize,
+}
+
+#[tauri::command]
+async fn copy_nodes(
+    state: State<'_, AppState>,
+    source_group_id: i64,
+    target_group_id: i64,
+    node_ids: Vec<String>,
+) -> Result<CopyView, String> {
+    if source_group_id == target_group_id {
+        return Err("源与目标不能是同一分组".into());
+    }
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+        let (inserted, duplicated) = db
+            .copy_group_nodes(source_group_id, target_group_id, &node_ids)
+            .map_err(|e| e.to_string())?;
+        Ok(CopyView { inserted, duplicated })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Persisted latency results for a group (shown until re-tested).
 #[tauri::command]
 async fn latency_list(
@@ -1060,6 +1089,7 @@ pub fn run() {
             rename_group,
             delete_group,
             delete_node,
+            copy_nodes,
             settings_get,
             settings_set,
             set_node_current,
