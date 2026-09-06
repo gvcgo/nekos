@@ -15,6 +15,7 @@ const err = ref("");
 
 const portStr = ref("2080");
 const mode = ref("global");
+const logLevel = ref("warn");
 const closeToTray = ref(true);
 
 onMounted(async () => {
@@ -22,6 +23,7 @@ onMounted(async () => {
     settings.value = await settingsGet();
     portStr.value = String(settings.value.port);
     mode.value = settings.value.mode;
+    logLevel.value = settings.value.log_level ?? "warn";
     closeToTray.value = settings.value.close_to_tray;
     version.value = await coreVersion();
   } catch (e) {
@@ -42,6 +44,7 @@ async function save() {
     settings.value = await settingsSet({
       port,
       mode: mode.value,
+      log_level: logLevel.value,
       close_to_tray: closeToTray.value,
     });
     savedMsg.value = "已保存（重启代理后生效）";
@@ -63,7 +66,16 @@ async function save() {
       <label>模式</label>
       <select v-model="mode" class="field">
         <option value="global">全局代理</option>
+        <option value="rule">规则(绕过大陆)</option>
         <option value="direct">直连（不走代理）</option>
+      </select>
+
+      <label>核心日志级别（下次启动内核生效）</label>
+      <select v-model="logLevel" class="field">
+        <option value="error">仅错误</option>
+        <option value="warn">警告+错误</option>
+        <option value="info">信息（调试用）</option>
+        <option value="debug">调试</option>
       </select>
 
       <label class="check">

@@ -139,7 +139,7 @@ impl AppState {
             "inbound": { "listen": "127.0.0.1", "port": settings.port, "type": "mixed" },
             "entries": entries,
             "selected": selected,
-            "log_level": "warn",
+            "log_level": settings.log_level,
         });
         if mode == "rule" {
             let (ip, site) = rule_assets
@@ -352,6 +352,7 @@ struct SettingsPatch {
     mode: Option<String>,
     proxy_enabled: Option<bool>,
     close_to_tray: Option<bool>,
+    log_level: Option<String>,
 }
 
 #[tauri::command]
@@ -378,11 +379,24 @@ async fn settings_set(
         if let Some(v) = patch.close_to_tray {
             s.close_to_tray = v;
         }
+        if let Some(v) = patch.log_level {
+            s.log_level = v;
+        }
         db.save_settings(&s).map_err(|e| e.to_string())?;
         Ok(s)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Last captured core log lines (newest last).
+#[tauri::command]
+fn log_tail(state: State<'_, AppState>, limit: Option<usize>) -> Vec<runtime::LogEntry> {
+    state
+        .runtime
+        .lock()
+        .map(|rt| rt.tail_logs(limit.unwrap_or(300)))
+        .unwrap_or_default()
 }
 
 /// Remember which node is "current" for a group.
@@ -714,6 +728,7 @@ pub fn run() {
             core_start,
             core_stop,
             proxy_set,
+            log_tail,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

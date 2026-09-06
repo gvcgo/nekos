@@ -112,6 +112,7 @@ export interface Settings {
   mode: string; // global | direct | rule
   proxy_enabled: boolean;
   close_to_tray: boolean;
+  log_level?: string; // debug | info | warn | error (legacy rows omit it)
   selected_by_group: Record<number, string>;
 }
 
@@ -121,6 +122,7 @@ export interface SettingsPatch {
   mode?: string;
   proxy_enabled?: boolean;
   close_to_tray?: boolean;
+  log_level?: string;
 }
 
 export function settingsGet(): Promise<Settings> {
@@ -172,4 +174,15 @@ export function proxySet(enabled: boolean): Promise<CoreStatusView> {
 
 export function coreStatus(): Promise<CoreStatusView> {
   return invoke<CoreStatusView>("core_status");
+}
+
+// ---- logs ---------------------------------------------------------------
+
+export interface LogEntry {
+  level: string; // error | warn | info | debug | other
+  line: string;
+}
+
+export function logTail(limit?: number): Promise<LogEntry[]> {
+  return invoke<LogEntry[]>("log_tail", { limit });
 }

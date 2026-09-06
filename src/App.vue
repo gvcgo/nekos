@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from "vue";
 import { coreStatus, coreVersion, ping } from "./api";
+import LogView from "./components/LogView.vue";
 import ServersView from "./components/ServersView.vue";
 import SubscriptionsView from "./components/SubscriptionsView.vue";
 import SettingsView from "./components/SettingsView.vue";
 
-type Page = "servers" | "subscriptions" | "settings";
+type Page = "servers" | "subscriptions" | "logs" | "settings";
 
 const page = ref<Page>("servers");
 const version = ref("");
@@ -16,6 +17,7 @@ const timer = ref<number | undefined>(undefined);
 const pages: { id: Page; label: string }[] = [
   { id: "servers", label: "服务" },
   { id: "subscriptions", label: "订阅" },
+  { id: "logs", label: "日志" },
   { id: "settings", label: "设置" },
 ];
 
@@ -73,6 +75,7 @@ onUnmounted(() => {
     <main class="main">
       <ServersView v-if="page === 'servers'" @saved="page = 'servers'" />
       <SubscriptionsView v-else-if="page === 'subscriptions'" @saved="page = 'servers'" />
+      <LogView v-else-if="page === 'logs'" />
       <SettingsView v-else />
     </main>
   </div>

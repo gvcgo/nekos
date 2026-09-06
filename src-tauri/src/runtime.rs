@@ -4,16 +4,43 @@
 //! process). Switching nodes = stop + start with a new session, matching
 //! the "instance rebuild" path documented in architecture.md §6.3.
 
-use std::io::{Read, Write};
+use std::collections::VecDeque;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use serde::Serialize;
+
 use crate::core::CoreCtl;
+
+/// One captured core log line.
+#[derive(Serialize, Clone)]
+pub struct LogEntry {
+    pub level: String, // error | warn | info | debug | other
+    pub line: String,
+}
+
+const LOG_CAP: usize = 1000;
+
+/// Classify the leading sing-box log level token ("ERROR[0000] ...").
+fn level_of(line: &str) -> &'static str {
+    let token = line.trim_start();
+    let token = token.split(['[', ' ']).next().unwrap_or("");
+    match token {
+        "ERROR" | "FATAL" | "PANIC" => "error",
+        "WARN" => "warn",
+        "INFO" => "info",
+        "DEBUG" => "debug",
+        _ => "other",
+    }
+}
 
 #[derive(Default)]
 pub struct RuntimeState {
     child: Option<Child>,
     started_at: Option<String>,
+    logs: Arc<Mutex<VecDeque<LogEntry>>>,
 }
 
 impl RuntimeState {
@@ -23,6 +50,13 @@ impl RuntimeState {
 
     pub fn started_at(&self) -> Option<&str> {
         self.started_at.as_deref()
+    }
+
+    /// Last N captured log lines (newest last), empty when idle.
+    pub fn tail_logs(&self, limit: usize) -> Vec<LogEntry> {
+        let logs = self.logs.lock().unwrap();
+        let skip = logs.len().saturating_sub(limit.max(1));
+        logs.iter().skip(skip).cloned().collect()
     }
 
     /// Spawn `nekos-core run`, feed it the assembled session JSON, and wait
@@ -85,11 +119,23 @@ impl RuntimeState {
             };
             return Err(format!("core start failed: {}", detail.trim()));
         }
-        // Reap stderr in the background so the pipe never fills.
-        if let Some(mut err_pipe) = child.stderr.take() {
+        // Clear logs for a fresh run, then stream stderr line-by-line.
+        self.logs.lock().unwrap().clear();
+        if let Some(err_pipe) = child.stderr.take() {
+            let logs = self.logs.clone();
             std::thread::spawn(move || {
-                let mut sink = String::new();
-                let _ = err_pipe.read_to_string(&mut sink);
+                let reader = BufReader::new(err_pipe);
+                for line in reader.lines().map_while(Result::ok) {
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    let level = level_of(&line);
+                    let mut logs = logs.lock().unwrap();
+                    if logs.len() >= LOG_CAP {
+                        logs.pop_front();
+                    }
+                    logs.push_back(LogEntry { level: level.to_string(), line });
+                }
             });
         }
         let started = ready
@@ -116,6 +162,16 @@ impl RuntimeState {
 mod tests {
     use super::*;
     use crate::core::CoreCtl;
+
+    #[test]
+    fn log_level_classification() {
+        assert_eq!(level_of("ERROR[0000] boom"), "error");
+        assert_eq!(level_of("FATAL[0001] x"), "error");
+        assert_eq!(level_of("WARN[0002] noisy"), "warn");
+        assert_eq!(level_of("INFO[0003] started"), "info");
+        assert_eq!(level_of("DEBUG[0004] trace"), "debug");
+        assert_eq!(level_of("random line"), "other");
+    }
 
     fn free_port() -> u16 {
         std::net::TcpListener::bind("127.0.0.1:0")
