@@ -173,6 +173,7 @@ impl Db {
         self.ensure_column("groups", "last_update_epoch", "INTEGER")?;
         self.ensure_column("groups", "kind", "TEXT")?;
         self.ensure_column("groups", "members", "TEXT")?; // JSON array of group ids (strategy groups)
+        self.ensure_column("groups", "host_group", "INTEGER")?; // where the strategy node appears
         Ok(())
     }
 
@@ -256,15 +257,40 @@ impl Db {
 
     pub fn create_strategy(
         &self,
+        host_group: i64,
         name: &str,
         kind: &str,
         members_json: &str,
     ) -> rusqlite::Result<i64> {
         self.conn.execute(
-            "INSERT INTO groups (name, kind, members) VALUES (?1, ?2, ?3)",
-            params![name, kind, members_json],
+            "INSERT INTO groups (name, kind, members, host_group) VALUES (?1, ?2, ?3, ?4)",
+            params![name, kind, members_json, host_group],
         )?;
         Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Strategy groups visible as pseudo-nodes inside the host group.
+    pub fn strategies_for(&self, host_group: i64) -> rusqlite::Result<Vec<Group>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, sub_url, user_agent, extra_headers, sub_userinfo, updated_at,
+                    last_update_epoch, kind, members
+             FROM groups WHERE host_group = ?1 AND kind LIKE 'strategy%' ORDER BY id",
+        )?;
+        let rows = stmt.query_map(params![host_group], |row| {
+            Ok(Group {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                sub_url: row.get(2)?,
+                user_agent: row.get(3)?,
+                extra_headers: row.get(4)?,
+                sub_userinfo: row.get(5)?,
+                updated_at: row.get(6)?,
+                last_update_epoch: row.get(7)?,
+                kind: row.get::<_, Option<String>>(8)?.unwrap_or_default(),
+                members: row.get(9)?,
+            })
+        })?;
+        rows.collect()
     }
 
     pub fn rename_group(&self, id: i64, name: &str) -> rusqlite::Result<()> {
@@ -282,6 +308,11 @@ impl Db {
         }
         self.conn.execute(
             "DELETE FROM latency WHERE group_id = ?1",
+            params![id],
+        )?;
+        // drop strategy nodes hosted by this group
+        self.conn.execute(
+            "DELETE FROM groups WHERE host_group = ?1 AND kind LIKE 'strategy%'",
             params![id],
         )?;
         self.conn.execute("DELETE FROM groups WHERE id = ?1", params![id])?;
@@ -538,7 +569,13 @@ mod tests {
     use super::*;
 
     fn open_tmp() -> Db {
-        let dir = std::env::temp_dir().join(format!("nekos-db-test-{}", std::process::id()));
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "nekos-db-test-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::SeqCst)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         Db::open(&dir.join("test.db")).unwrap()
     }
@@ -614,7 +651,7 @@ mod tests {
         let n1b = NewNode { id: "x1".into(), r#type: "anytls".into(), remark: "一改".into(), out: "{}".into() };
         db.upsert_nodes(a, &[n1]).unwrap();
         db.upsert_nodes(b, &[n1b, n2]).unwrap();
-        let s = db.create_strategy("策略", "strategy", &format!("[{a},{b}]")).unwrap();
+        let s = db.create_strategy(a, "策略", "strategy", &format!("[{a},{b}]")).unwrap();
         assert!(db.is_strategy(s).unwrap());
         let union = db.nodes_for_group(s).unwrap();
         assert_eq!(union.len(), 2, "dedupe by id across members");
@@ -622,9 +659,15 @@ mod tests {
         assert!(ids.contains(&"x1".into()) && ids.contains(&"x2".into()));
         // normal group unchanged
         assert_eq!(db.nodes_for_group(a).unwrap().len(), 1);
+        // strategy appears in its host group list
+        let hosted = db.strategies_for(a).unwrap();
+        assert!(hosted.iter().any(|g| g.id == s));
         // empty members degrade to empty
-        let s2 = db.create_strategy("空", "strategy", "[]").unwrap();
+        let s2 = db.create_strategy(a, "空", "strategy", "[]").unwrap();
         assert!(db.nodes_for_group(s2).unwrap().is_empty());
+        // deleting the host group removes hosted strategies
+        db.delete_group(a).unwrap();
+        assert!(db.group(s).unwrap().is_none());
     }
 
     #[test]

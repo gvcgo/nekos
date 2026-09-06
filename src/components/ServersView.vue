@@ -208,15 +208,25 @@ async function createStrategy() {
       err.value = "请填写名称并选择至少一个成员分组";
       return;
     }
-    const g = await createStrategyGroup(stratName.value.trim(), stratAuto.value, ids);
+    await createStrategyGroup(currentGroupId(), stratName.value.trim(), stratAuto.value, ids);
     stratOpen.value = false;
-    await loadAll();
-    if (g.id) await switchGroup(g.id);
+    await reloadNodes();
   } catch (e) {
     err.value = String(e);
   } finally {
     stratBusy.value = false;
   }
+}
+
+function stratIdFrom(n: Node): number {
+  return Number(n.id.replace("strat:", "")) || 0;
+}
+
+async function deleteStrategyNode(n: Node) {
+  const sid = stratIdFrom(n);
+  if (!sid || !confirm(`删除策略组「${n.remark}」？`)) return;
+  await deleteGroup(sid);
+  await reloadNodes();
 }
 
 async function removeGroup() {
@@ -401,7 +411,7 @@ onMounted(loadAll);
       <h1>服务</h1>
 
       <select class="group-select" :value="currentGroupId()" @change="switchGroup(Number(($event.target as HTMLSelectElement).value))">
-        <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}<template v-if="kindTag(g)">&nbsp;{{ kindTag(g) }}</template></option>
+        <option v-for="g in groups.filter((x) => (x.kind ?? 'normal') === 'normal')" :key="g.id" :value="g.id">{{ g.name }}</option>
       </select>
       <span class="group-ops" title="管理分组">
         <button class="ghost mini" @click="newGroup">＋ 新建</button>
@@ -471,9 +481,12 @@ onMounted(loadAll);
             <td :class="delayMap[n.id]?.error ? 'bad' : ''">{{ delayText(n) }}</td>
             <td class="ops">
               <button class="ghost" :disabled="!!delayMap[n.id] && delayMap[n.id]!.delay_ms == null && !delayMap[n.id]!.error" @click="testNode(n.id)">测速</button>
-              <button class="ghost" :disabled="qrBusy" title="复制分享链接" @click="copyNodeLink(n.group_id, n.id, n.remark)">复制</button>
-              <button class="ghost" title="二维码分享" @click="showNodeQr(n.group_id, n.id, n.remark)">QR</button>
-              <button v-if="!isVirtualCurrent" class="ghost danger" @click="removeNode(n.id)">删除</button>
+              <template v-if="n.type !== 'strategy'">
+                <button class="ghost" :disabled="qrBusy" title="复制分享链接" @click="copyNodeLink(n.group_id, n.id, n.remark)">复制</button>
+                <button class="ghost" title="二维码分享" @click="showNodeQr(n.group_id, n.id, n.remark)">QR</button>
+                <button v-if="!isVirtualCurrent" class="ghost danger" @click="removeNode(n.id)">删除</button>
+              </template>
+              <button v-else class="ghost danger" title="删除该策略组" @click="deleteStrategyNode(n)">✕策略</button>
             </td>
           </tr>
         </tbody>

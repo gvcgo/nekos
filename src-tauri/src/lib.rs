@@ -116,7 +116,15 @@ impl AppState {
     ) -> Result<(String, String), String> {
         let settings = self.settings();
         let db = self.db.lock().map_err(|_| "db lock poisoned".to_string())?;
-        let nodes = db.nodes_for_group(group_id).map_err(|e| format!("db: {e}"))?;
+        // A selected "strat:<gid>" pseudo-node runs the member union
+        // instead of the host group's own nodes.
+        let strat_override: Option<i64> = settings
+            .selected_by_group
+            .get(&group_id)
+            .and_then(|s| s.strip_prefix("strat:"))
+            .and_then(|v| v.parse().ok());
+        let source_group = strat_override.unwrap_or(group_id);
+        let nodes = db.nodes_for_group(source_group).map_err(|e| format!("db: {e}"))?;
         if nodes.is_empty() {
             return Err("当前分组没有节点".into());
         }
@@ -138,7 +146,7 @@ impl AppState {
         }
         let selected = settings
             .selected_by_group
-            .get(&group_id)
+            .get(&if strat_override.is_some() { source_group } else { group_id })
             .and_then(|id| nodes.iter().find(|n| &n.id == id))
             .map(|n| n.id.clone())
             .unwrap_or_else(|| nodes[0].id.clone());
@@ -268,9 +276,25 @@ async fn groups_list(state: State<'_, AppState>) -> Result<Vec<db::Group>, Strin
 
 #[tauri::command]
 async fn nodes_list(state: State<'_, AppState>, group_id: i64) -> Result<Vec<db::Node>, String> {
-    with_db(&state, |db| {
-        db.nodes_for_group(group_id).map_err(|e| e.to_string())
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+        let mut nodes = db.nodes_for_group(group_id).map_err(|e| e.to_string())?;
+        // strategy (policy) groups masquerade as nodes in their host group
+        for s in db.strategies_for(group_id).map_err(|e| e.to_string())? {
+            let auto = if s.kind == "strategy" { "⚡" } else { "◈" };
+            nodes.push(db::Node {
+                id: format!("strat:{}", s.id),
+                group_id: s.id,
+                r#type: "strategy".into(),
+                remark: format!("{} {auto}", s.name),
+                out: "{}".into(),
+            });
+        }
+        Ok(nodes)
     })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Parse text and persist every resulting node into the group.
@@ -312,11 +336,13 @@ async fn import_to_group(
     Ok(ImportResult { nodes: kept, errors: parsed.errors })
 }
 
-/// Create a strategy group (v2rayN policy group) over member groups.
+/// Create a strategy group (v2rayN policy group) that shows up as a
+/// pseudo-node inside the host group's node list.
 /// auto=true measures members on start and pins the fastest node.
 #[tauri::command]
 async fn create_strategy_group(
     state: State<'_, AppState>,
+    host_group_id: i64,
     name: String,
     auto: bool,
     member_group_ids: Vec<i64>,
@@ -333,7 +359,7 @@ async fn create_strategy_group(
     let db = state.db.clone();
     let gid = tauri::async_runtime::spawn_blocking(move || {
         let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
-        db.create_strategy(name.trim(), &kind, &members_json)
+        db.create_strategy(host_group_id, name.trim(), &kind, &members_json)
             .map_err(|e| e.to_string())
     })
     .await
@@ -501,12 +527,14 @@ async fn set_node_current(
     let db = state.db.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
-        if db
-            .node(group_id, &node_id)
-            .map_err(|e| e.to_string())?
-            .is_none()
-        {
-            return Err("节点不存在".to_string());
+        if !node_id.starts_with("strat:") {
+            if db
+                .node(group_id, &node_id)
+                .map_err(|e| e.to_string())?
+                .is_none()
+            {
+                return Err("节点不存在".to_string());
+            }
         }
         let mut s = db.load_settings();
         s.selected_by_group.insert(group_id, node_id);
@@ -627,12 +655,45 @@ fn autoselect_strategy(db: &Mutex<Db>, ctl: &CoreCtl, group_id: i64) -> Result<(
 }
 
 /// Measure one node (single-entry batch, same engine as batch testing).
+/// A "strat:<gid>" pseudo-node measures its members and reports the
+/// pinned fastest node's delay.
 #[tauri::command]
 async fn measure_node(
     state: State<'_, AppState>,
     group_id: i64,
     node_id: String,
 ) -> Result<MeasureView, String> {
+    if let Some(sgid) = node_id
+        .strip_prefix("strat:")
+        .and_then(|v| v.parse::<i64>().ok())
+    {
+        let db = state.db.clone();
+        let ctl = state.ctl.clone();
+        return tauri::async_runtime::spawn_blocking(move || -> Result<MeasureView, String> {
+            autoselect_strategy(&db, &ctl, sgid)?;
+            let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+            let member = db
+                .load_settings()
+                .selected_by_group
+                .get(&sgid)
+                .cloned()
+                .ok_or_else(|| "策略组没有可选节点".to_string())?;
+            let owner = db
+                .nodes_for_group(sgid)
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .find(|n| n.id == member)
+                .map(|n| n.group_id)
+                .ok_or_else(|| "成员节点不存在".to_string())?;
+            let delay = db.latency_delay(owner, &member).map_err(|e| e.to_string())?;
+            Ok(match delay {
+                Some(ms) => MeasureView { delay_ms: Some(ms), error: None },
+                None => MeasureView { delay_ms: None, error: Some("成员全部不可用".into()) },
+            })
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    }
     let db = state.db.clone();
     let ctl = state.ctl.clone();
     let ids = vec![node_id.clone()];
@@ -1088,18 +1149,33 @@ fn core_status_raw(state: &AppState) -> CoreStatusView {
 async fn core_start(state: State<'_, AppState>) -> Result<RunResult, String> {
     let settings = state.settings();
     let group_id = settings.current_group_id;
-    let is_auto_strategy = {
+    let auto_strategy_target: Option<i64> = {
         let db = state.db.lock().map_err(|_| "db lock poisoned".to_string())?;
-        db.group(group_id)
-            .map_err(|e| e.to_string())?
-            .map(|g| g.kind == "strategy")
-            .unwrap_or(false)
+        let kind_of = |id: i64| -> Option<String> {
+            db.group(id).ok().flatten().map(|g| g.kind)
+        };
+        let selected = settings.selected_by_group.get(&group_id).cloned();
+        if let Some(sel) = selected {
+            if let Some(sgid) = sel.strip_prefix("strat:").and_then(|v| v.parse().ok()) {
+                if kind_of(sgid).as_deref() == Some("strategy") {
+                    Some(sgid)
+                } else {
+                    None
+                }
+            } else if kind_of(group_id).as_deref() == Some("strategy") {
+                Some(group_id)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
     };
-    if is_auto_strategy {
+    if let Some(target) = auto_strategy_target {
         let db = state.db.clone();
         let ctl = state.ctl.clone();
         // v2rayN policy-group: measure members without latency, pin fastest
-        let _ = tauri::async_runtime::spawn_blocking(move || autoselect_strategy(&db, &ctl, group_id))
+        let _ = tauri::async_runtime::spawn_blocking(move || autoselect_strategy(&db, &ctl, target))
             .await
             .map_err(|e| e.to_string())
             .and_then(|r| r);

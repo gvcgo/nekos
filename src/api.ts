@@ -111,13 +111,14 @@ export function createGroup(name: string, subUrl?: string): Promise<Group> {
   return invoke<Group>("create_group", { name, subUrl });
 }
 
-/** v2rayN-style strategy group over member groups (auto = urltest pick). */
+/** v2rayN-style strategy group as a pseudo-node in the host group. */
 export function createStrategyGroup(
+  hostGroupId: number,
   name: string,
   auto: boolean,
   memberGroupIds: number[],
 ): Promise<Group> {
-  return invoke<Group>("create_strategy_group", { name, auto, memberGroupIds });
+  return invoke<Group>("create_strategy_group", { hostGroupId, name, auto, memberGroupIds });
 }
 
 export function deleteGroup(groupId: number): Promise<void> {
