@@ -113,6 +113,7 @@ export interface Settings {
   proxy_enabled: boolean;
   close_to_tray: boolean;
   log_level?: string; // debug | info | warn | error (legacy rows omit it)
+  sort_by_delay?: boolean;
   selected_by_group: Record<number, string>;
 }
 
@@ -123,6 +124,7 @@ export interface SettingsPatch {
   proxy_enabled?: boolean;
   close_to_tray?: boolean;
   log_level?: string;
+  sort_by_delay?: boolean;
 }
 
 export function settingsGet(): Promise<Settings> {

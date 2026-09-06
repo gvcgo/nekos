@@ -353,6 +353,7 @@ struct SettingsPatch {
     proxy_enabled: Option<bool>,
     close_to_tray: Option<bool>,
     log_level: Option<String>,
+    sort_by_delay: Option<bool>,
 }
 
 #[tauri::command]
@@ -381,6 +382,9 @@ async fn settings_set(
         }
         if let Some(v) = patch.log_level {
             s.log_level = v;
+        }
+        if let Some(v) = patch.sort_by_delay {
+            s.sort_by_delay = v;
         }
         db.save_settings(&s).map_err(|e| e.to_string())?;
         Ok(s)

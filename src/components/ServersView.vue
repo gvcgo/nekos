@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import {
   coreStatus,
   coreStop,
@@ -36,6 +36,29 @@ const startBusy = ref(false);
 const err = ref("");
 const delayMap = ref<Record<string, MeasureView>>({});
 const testingAll = ref(false);
+const sortByDelay = ref(true);
+
+/** latency ordering: measured asc; failed after measured; untested last. */
+const sortedNodes = computed(() => {
+  const list = nodes.value;
+  if (!sortByDelay.value) return list;
+  const rank = (n: Node): [number, number] => {
+    const m = delayMap.value[n.id];
+    if (m && m.delay_ms != null) return [0, m.delay_ms];
+    if (m && m.error) return [1, 0];
+    return [2, 0];
+  };
+  return [...list].sort((a, b) => {
+    const [ra, va] = rank(a);
+    const [rb, vb] = rank(b);
+    return ra !== rb ? ra - rb : va - vb;
+  });
+});
+
+async function toggleSort(on: boolean) {
+  settings.value = await settingsSet({ sort_by_delay: on });
+  sortByDelay.value = on;
+}
 
 function currentGroupId(): number {
   return settings.value?.current_group_id ?? 1;
@@ -55,6 +78,7 @@ async function loadAll() {
   groups.value = gs;
   settings.value = st;
   status.value = cs;
+  sortByDelay.value = st.sort_by_delay ?? true;
   await reloadNodes();
 }
 
@@ -271,6 +295,10 @@ onMounted(loadAll);
       <div class="nodes-head">
         <strong>节点（{{ nodes.length }}）</strong>
         <span class="spacer"></span>
+        <label class="sort-toggle" title="按延迟升序排列（失败与未测在后）">
+          <input type="checkbox" :checked="sortByDelay" @change="toggleSort(($event.target as HTMLInputElement).checked)" />
+          按延迟排序
+        </label>
         <button class="ghost" :disabled="testingAll || !nodes.length" @click="testAll">
           {{ testingAll ? "测速中…" : "全部测速" }}
         </button>
@@ -280,7 +308,7 @@ onMounted(loadAll);
           <tr><th></th><th>类型</th><th>备注</th><th>延迟</th><th>操作</th></tr>
         </thead>
         <tbody>
-          <tr v-for="n in nodes" :key="n.id" :class="{ current: n.id === selectedNodeId() }">
+          <tr v-for="n in sortedNodes" :key="n.id" :class="{ current: n.id === selectedNodeId() }">
             <td class="sel" @click="pickNode(n.id)">{{ n.id === selectedNodeId() ? "●" : "○" }}</td>
             <td><code>{{ n.type }}</code></td>
             <td class="remark" @click="pickNode(n.id)">{{ n.remark }}</td>
@@ -329,6 +357,7 @@ button.mini { padding: 3px 8px; font-size: 12px; }
   background: transparent; color: inherit; font-family: ui-monospace, monospace; font-size: 12px; resize: vertical;
 }
 .nodes { max-width: 860px; }
+.sort-toggle { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer; }
 .nodes-head { display: flex; align-items: center; padding: 4px 2px; font-size: 13px; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th, td { text-align: left; padding: 6px 8px; border-top: 1px solid var(--border); }

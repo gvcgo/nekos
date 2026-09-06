@@ -42,6 +42,10 @@ fn default_log_level() -> String {
     "warn".into()
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Settings {
     pub current_group_id: i64,
@@ -51,6 +55,8 @@ pub struct Settings {
     pub close_to_tray: bool,
     #[serde(default = "default_log_level")]
     pub log_level: String, // debug | info | warn | error
+    #[serde(default = "default_true")]
+    pub sort_by_delay: bool,
     pub selected_by_group: std::collections::HashMap<i64, String>,
 }
 
@@ -63,6 +69,7 @@ impl Default for Settings {
             proxy_enabled: false, // system proxy is opt-in via the toolbar switch
             close_to_tray: true,
             log_level: default_log_level(),
+            sort_by_delay: true,
             selected_by_group: Default::default(),
         }
     }
