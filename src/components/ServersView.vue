@@ -379,9 +379,11 @@ onMounted(loadAll);
       </button>
     </div>
 
-    <span v-if="switchMsg" class="ok">{{ switchMsg }}</span>
-    <span v-if="shareMsg" class="ok">{{ shareMsg }}</span>
-    <span v-if="err" class="err">{{ err }}</span>
+    <div class="msgbar">
+      <span v-if="switchMsg" class="ok">{{ switchMsg }}</span>
+      <span v-if="shareMsg" class="ok">{{ shareMsg }}</span>
+      <span v-if="err" class="err">{{ err }}</span>
+    </div>
 
     <section class="import-card">
       <div class="row">
@@ -479,6 +481,12 @@ button.mini { padding: 3px 8px; font-size: 12px; }
 .nodes { max-width: 860px; }
 .sort-toggle { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer; }
 .dim { opacity: 0.55; font-size: 11px; }
+.msgbar {
+  min-height: 18px; line-height: 18px; font-size: 12px;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.msgbar .ok { color: #22c55e; }
+.msgbar .err { color: #ef4444; }
 .dialog-mask {
   position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45);
   display: flex; align-items: center; justify-content: center; z-index: 50;
