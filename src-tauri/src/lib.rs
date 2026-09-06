@@ -766,6 +766,18 @@ async fn subscribe(
         .await
         .map_err(|e| format!("parse task failed: {e}"))??;
 
+    if save_name.is_some() && parsed.nodes.is_empty() {
+        let detail = parsed
+            .errors
+            .first()
+            .map(|e| e.reason.as_str())
+            .unwrap_or("未知原因");
+        return Err(format!(
+            "未能从该订阅解析出节点（{} 错误），未创建订阅：{detail}",
+            parsed.errors.len()
+        ));
+    }
+
     let group_id = if let Some(name) = save_name {
         let db = state.db.clone();
         let (nodes, userinfo_json) = {
