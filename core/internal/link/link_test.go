@@ -1,6 +1,7 @@
 package link
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"testing"
 )
@@ -241,7 +242,7 @@ proxies:
 }
 
 func TestParseDedupeAndBase64Subscription(t *testing.T) {
-	// Whole-payload base64 (standard v2rayN subscription encoding).
+	// Dedupe by content hash on plain links.
 	res := Parse(anytlsA + "\n" + anytlsB + "\n" + anytlsA)
 	if len(res.Errors) != 0 {
 		t.Fatalf("unexpected errors: %+v", res.Errors)
@@ -252,6 +253,36 @@ func TestParseDedupeAndBase64Subscription(t *testing.T) {
 	if res.Nodes[0].ID == res.Nodes[1].ID {
 		t.Fatalf("node IDs must differ")
 	}
+}
+
+// Whole-payload base64 (v2rayN style): standard padded, URL-safe unpadded,
+// and newline-wrapped at 76 columns. All must decode and parse.
+func TestParseBase64SubscriptionPayloads(t *testing.T) {
+	links := anytlsA + "\n" + trojanA
+	payloads := map[string]string{
+		"std-padded":     base64.StdEncoding.EncodeToString([]byte(links)),
+		"urlsafe-raw":    base64.RawURLEncoding.EncodeToString([]byte(links)),
+		"std-wrapped76":  wrapBase64(base64.StdEncoding.EncodeToString([]byte(links)), 76),
+		"urlsafe-padded": base64.URLEncoding.EncodeToString([]byte(links)),
+	}
+	for name, payload := range payloads {
+		res := Parse(payload)
+		if len(res.Nodes) != 2 {
+			t.Fatalf("%s: want 2 nodes, got %d (errors=%+v)", name, len(res.Nodes), res.Errors)
+		}
+		if res.Nodes[0].OutboundType() != "anytls" || res.Nodes[1].OutboundType() != "trojan" {
+			t.Fatalf("%s: wrong types %s/%s", name, res.Nodes[0].OutboundType(), res.Nodes[1].OutboundType())
+		}
+	}
+}
+
+func wrapBase64(s string, width int) string {
+	var out string
+	for len(s) > width {
+		out += s[:width] + "\n"
+		s = s[width:]
+	}
+	return out + s
 }
 
 func TestParseErrors(t *testing.T) {

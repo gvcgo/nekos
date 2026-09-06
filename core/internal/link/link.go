@@ -32,6 +32,12 @@ func Parse(text string) *model.ImportResult {
 		return result
 	}
 
+	// Whole-body base64 (the common subscription encoding): decode before
+	// line splitting so wrapped/one-line payloads parse correctly.
+	if decoded := tryBase64Payload(text); decoded != "" {
+		return Parse(decoded)
+	}
+
 	for _, rawLine := range strings.FieldsFunc(text, func(r rune) bool { return r == '\n' || r == '\r' }) {
 		line := strings.TrimSpace(rawLine)
 		if line == "" {
@@ -104,25 +110,58 @@ func splitPayload(body string) []string {
 	return []string{body}
 }
 
-// tryBase64Subscription decodes payloads that are entirely base64 and, once
-// decoded, contain share links. Returns "" when the payload is not base64 or
-// does not decode to link-bearing text.
+// tryBase64Payload decodes payloads that are entirely base64 (line wraps
+// are cosmetic and removed). Returns decoded text only when it contains
+// share links. Empty for non-base64 or link-already text.
+func tryBase64Payload(text string) string {
+	if strings.Contains(text, "://") {
+		return ""
+	}
+	compact := strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == ' ' || r == '\t' {
+			return -1
+		}
+		return r
+	}, text)
+	if len(compact) < 24 {
+		return ""
+	}
+	return decodeBase64(compact)
+}
+
+// decodeBase64 tries URL-safe then standard alphabets, each with and
+// without canonical padding. Returns decoded text only when it contains
+// share links.
+func decodeBase64(compact string) string {
+	pad := (4 - len(compact)%4) % 4
+	padded := compact + strings.Repeat("=", pad)
+	candidates := []struct {
+		enc *base64.Encoding
+		in  string
+	}{
+		{base64.RawURLEncoding, compact},
+		{base64.RawStdEncoding, compact},
+		{base64.URLEncoding, padded},
+		{base64.StdEncoding, padded},
+	}
+	for _, cand := range candidates {
+		if decoded, err := cand.enc.DecodeString(cand.in); err == nil {
+			out := string(decoded)
+			if strings.Contains(out, "://") {
+				return out
+			}
+		}
+	}
+	return ""
+}
+
+// tryBase64Subscription decodes a single wrapped line; kept for per-line
+// payloads (url= wrappers, line-encoded subs).
 func tryBase64Subscription(line string) string {
-	if len(line) < 24 || !schemePattern.MatchString(line) {
+	if len(line) < 24 || schemePattern.MatchString(line) {
 		return ""
 	}
-	decoded, err := base64.RawURLEncoding.DecodeString(line)
-	if err != nil {
-		decoded, err = base64.StdEncoding.DecodeString(line)
-	}
-	if err != nil {
-		return ""
-	}
-	out := string(decoded)
-	if !strings.Contains(out, "://") {
-		return ""
-	}
-	return out
+	return decodeBase64(line)
 }
 
 func parseError(e model.ImportError) error {

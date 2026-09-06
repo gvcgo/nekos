@@ -585,6 +585,18 @@ async fn subscription_refresh(
         .await
         .map_err(|e| format!("parse task failed: {e}"))??;
 
+    if parsed.nodes.is_empty() {
+        let detail = parsed
+            .errors
+            .first()
+            .map(|e| e.reason.as_str())
+            .unwrap_or("未知原因");
+        return Err(format!(
+            "抓取解析失败（0 节点 / {} 错误），现有节点未改动：{detail}",
+            parsed.errors.len()
+        ));
+    }
+
     let db = state.db.clone();
     let nodes: Vec<NewNode> = parsed
         .nodes
