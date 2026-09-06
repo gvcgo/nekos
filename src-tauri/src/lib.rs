@@ -628,52 +628,9 @@ fn probe_and_persist(
     Ok(rows)
 }
 
-/// v2rayN policy-group semantics: for an AUTO strategy group, measure every
-/// member node that has no latency yet, then pin the fastest node as the
-/// group's selection before the core starts.
-fn autoselect_strategy(db: &Mutex<Db>, ctl: &CoreCtl, group_id: i64) -> Result<(), String> {
-    let entries = resolve_entries(db, group_id, None, false)?;
-    let delays: std::collections::HashMap<String, Option<i64>> = {
-        let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
-        let mut m = std::collections::HashMap::new();
-        for (id, _, owner) in &entries {
-            m.insert(id.clone(), db.latency_delay(*owner, id).map_err(|e| e.to_string())?);
-        }
-        m
-    };
-    let missing: Vec<EntryOwned> = entries
-        .iter()
-        .filter(|(id, _, _)| delays.get(id).copied().flatten().is_none())
-        .cloned()
-        .collect();
-    if !missing.is_empty() {
-        // failures still persist as error rows; never block startup
-        let _ = probe_and_persist(db, ctl, &missing);
-    }
-    // pin the fastest known node
-    let mut best: Option<(i64, &str)> = None;
-    for (id, _, owner) in &entries {
-        let d = {
-            let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
-            db.latency_delay(*owner, id).map_err(|e| e.to_string())?
-        };
-        if let Some(d) = d {
-            if best.map(|(bd, _)| d < bd).unwrap_or(true) {
-                best = Some((d, id.as_str()));
-            }
-        }
-    }
-    let chosen = best.map(|(_, id)| id.to_string())
-        .unwrap_or_else(|| entries[0].0.clone());
-    let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
-    let mut s = db.load_settings();
-    s.selected_by_group.insert(group_id, chosen);
-    db.save_settings(&s).map_err(|e| e.to_string())
-}
-
 /// Measure one node (single-entry batch, same engine as batch testing).
-/// A "strat:<gid>" pseudo-node measures its members and reports the
-/// pinned fastest node's delay.
+/// A "strat:<gid>" pseudo-node measures ALL its member nodes (like batch
+/// testing the strategy) and reports the fastest member's delay.
 #[tauri::command]
 async fn measure_node(
     state: State<'_, AppState>,
@@ -687,26 +644,19 @@ async fn measure_node(
         let db = state.db.clone();
         let ctl = state.ctl.clone();
         return tauri::async_runtime::spawn_blocking(move || -> Result<MeasureView, String> {
-            autoselect_strategy(&db, &ctl, sgid)?;
-            let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
-            let member = db
-                .load_settings()
-                .selected_by_group
-                .get(&sgid)
-                .cloned()
-                .ok_or_else(|| "策略组没有可选节点".to_string())?;
-            let owner = db
-                .nodes_for_group(sgid)
-                .map_err(|e| e.to_string())?
-                .into_iter()
-                .find(|n| n.id == member)
-                .map(|n| n.group_id)
-                .ok_or_else(|| "成员节点不存在".to_string())?;
-            let delay = db.latency_delay(owner, &member).map_err(|e| e.to_string())?;
-            Ok(match delay {
-                Some(ms) => MeasureView { delay_ms: Some(ms), error: None },
-                None => MeasureView { delay_ms: None, error: Some("成员全部不可用".into()) },
-            })
+            let entries = resolve_entries(&db, sgid, None, false)?;
+            let rows = probe_and_persist(&db, &ctl, &entries)?;
+            let failed = rows.iter().filter(|r| r.error.is_some()).count();
+            match rows.iter().filter_map(|r| r.delay_ms).min() {
+                Some(ms) => Ok(MeasureView {
+                    delay_ms: Some(ms),
+                    error: None,
+                }),
+                None => Ok(MeasureView {
+                    delay_ms: None,
+                    error: Some(format!("成员全部失败（{failed}/{}）", rows.len())),
+                }),
+            }
         })
         .await
         .map_err(|e| e.to_string())?;
