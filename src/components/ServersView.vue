@@ -233,28 +233,52 @@ async function deleteStrategyNode(n: Node) {
 // join (mount) a strategy node into another group
 const joinOf = ref<Node | null>(null);
 const joinTarget = ref<number | null>(null);
+const newJoinName = ref("");
+const joinBusy = ref(false);
+
+const joinableGroups = computed(() =>
+  groups.value.filter(
+    (g) => (g.kind ?? "normal") === "normal" && g.id !== currentGroupId(),
+  ),
+);
 
 function openJoin(n: Node) {
   joinOf.value = n;
-  const others = groups.value.filter(
-    (g) => (g.kind ?? "normal") === "normal" && g.id !== currentGroupId(),
-  );
-  joinTarget.value = others[0]?.id ?? null;
+  newJoinName.value = "";
+  err.value = "";
+  joinTarget.value = joinableGroups.value[0]?.id ?? null;
 }
 
 async function doJoin() {
   const n = joinOf.value;
-  if (!n || joinTarget.value == null) {
-    err.value = "没有可加入的分组";
-    return;
-  }
+  if (!n) return;
+  joinBusy.value = true;
+  err.value = "";
+  shareMsg.value = "";
   try {
-    const out = await copyNodes(currentGroupId(), joinTarget.value, [n.id]);
-    const targetName = groups.value.find((g) => g.id === joinTarget.value)?.name ?? "";
+    let target = joinTarget.value;
+    if (target == null) {
+      // create a fresh group as the target
+      const name = newJoinName.value.trim();
+      if (!name) {
+        err.value = "请选择目标分组，或填写新分组名称后加入";
+        return;
+      }
+      const created = await createGroup(name);
+      target = created.id;
+    }
+    const out = await copyNodes(currentGroupId(), target, [n.id]);
+    const targetName =
+      groups.value.find((g) => g.id === target)?.name ??
+      newJoinName.value.trim() ??
+      "";
     shareMsg.value = `已将「${n.remark}」加入分组「${targetName}」${out.duplicated ? "（已存在）" : ""}`;
     joinOf.value = null;
+    if (out.inserted > 0) await loadAll();
   } catch (e) {
     err.value = String(e);
+  } finally {
+    joinBusy.value = false;
   }
 }
 
@@ -552,15 +576,24 @@ onMounted(loadAll);
     <div v-if="joinOf" class="dialog-mask" @click.self="joinOf = null">
       <div class="dialog">
         <h3>把「{{ joinOf.remark }}」加入分组</h3>
-        <div class="dialog-row"><label>目标分组</label>
-          <select v-model="joinTarget" class="inp sel">
-            <option v-for="g in groups.filter((x) => (x.kind ?? 'normal') === 'normal' && x.id !== currentGroupId())" :key="g.id" :value="g.id">{{ g.name }}</option>
-          </select>
-        </div>
+        <template v-if="joinableGroups.length">
+          <div class="dialog-row"><label>目标分组</label>
+            <select v-model="joinTarget" class="inp sel">
+              <option v-for="g in joinableGroups" :key="g.id" :value="g.id">{{ g.name }}</option>
+            </select>
+          </div>
+        </template>
+        <template v-else>
+          <div class="dim" style="align-self: flex-start">还没有其它分组 — 填名称直接新建一个并加入：</div>
+          <input v-model="newJoinName" class="inp" placeholder="新分组名称" style="align-self: stretch" />
+        </template>
         <div class="dialog-btns">
+          <span v-if="err" class="err">{{ err }}</span>
           <span class="spacer"></span>
           <button class="ghost" @click="joinOf = null">取消</button>
-          <button :disabled="joinTarget == null" @click="doJoin">加入</button>
+          <button :disabled="joinBusy || (joinTarget == null && !newJoinName.trim())" @click="doJoin">
+            {{ joinBusy ? "加入中…" : joinTarget != null ? "加入" : "新建并加入" }}
+          </button>
         </div>
       </div>
     </div>
