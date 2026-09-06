@@ -494,6 +494,137 @@ async fn latency_list(
     with_db(&state, |db| db.list_latency(group_id).map_err(|e| e.to_string()))
 }
 
+// ---- subscription management --------------------------------------------
+
+/// Edit a subscription group's metadata (name, url, UA, extra headers).
+/// Node content is untouched; call subscription_refresh to re-fetch.
+#[tauri::command]
+async fn subscription_edit(
+    state: State<'_, AppState>,
+    group_id: i64,
+    name: String,
+    url: String,
+    user_agent: String,
+    extra_headers_json: String,
+) -> Result<db::Group, String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+        let current = db
+            .group(group_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "分组不存在".to_string())?;
+        if group_id != 1 && !name.trim().is_empty() {
+            db.rename_group(group_id, name.trim())
+                .map_err(|e| e.to_string())?;
+        }
+        let ua = if user_agent.trim().is_empty() {
+            None
+        } else {
+            Some(user_agent.trim().to_string())
+        };
+        let extras = if extra_headers_json.trim().is_empty()
+            || extra_headers_json.trim() == "{}"
+        {
+            None
+        } else {
+            Some(extra_headers_json.trim().to_string())
+        };
+        let url = if url.trim().is_empty() { None } else { Some(url.trim().to_string()) };
+        db.update_group_submeta(
+            group_id,
+            url.as_deref(),
+            ua.as_deref(),
+            extras.as_deref(),
+            current.sub_userinfo.as_deref(),
+        )
+        .map_err(|e| e.to_string())?;
+        db.group(group_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "分组消失".to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Re-fetch a subscription group using its saved URL + headers and replace
+/// the group's nodes.
+#[tauri::command]
+async fn subscription_refresh(
+    state: State<'_, AppState>,
+    group_id: i64,
+) -> Result<subscribe::SubscribeOutcome, String> {
+    let db = state.db.clone();
+    let client = state.ctl.client().clone();
+    let ctl = state.ctl.clone();
+
+    let (url, headers) = tauri::async_runtime::spawn_blocking(move || -> Result<(String, HashMap<String, String>), String> {
+        let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+        let g = db
+            .group(group_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "分组不存在".to_string())?;
+        let url = g.sub_url.ok_or_else(|| "该分组不是订阅组（没有订阅 URL）".to_string())?;
+        let mut headers: HashMap<String, String> = HashMap::new();
+        if let Some(ua) = g.user_agent.filter(|v| !v.is_empty()) {
+            headers.insert("User-Agent".into(), ua);
+        }
+        if let Some(extras) = g.extra_headers {
+            if let Ok(map) = serde_json::from_str::<HashMap<String, String>>(&extras) {
+                headers.extend(map);
+            }
+        }
+        Ok((url, headers))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    let (body, content_type, userinfo) = fetch_subscribe(&client, &url, &headers).await?;
+    let text = String::from_utf8_lossy(&body).into_owned();
+    let parsed = tauri::async_runtime::spawn_blocking(move || ctl.parse(&text))
+        .await
+        .map_err(|e| format!("parse task failed: {e}"))??;
+
+    let db = state.db.clone();
+    let nodes: Vec<NewNode> = parsed
+        .nodes
+        .iter()
+        .map(|n| NewNode {
+            id: n.id.clone(),
+            r#type: n.r#type.clone(),
+            remark: n.remark.clone(),
+            out: n.out.to_string(),
+        })
+        .collect();
+    let userinfo_json = userinfo
+        .as_ref()
+        .map(|u| serde_json::to_string(u).unwrap_or_default());
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+        db.replace_group_nodes(group_id, &nodes)
+            .map_err(|e| e.to_string())?;
+        let current = db.group(group_id).map_err(|e| e.to_string())?;
+        db.update_group_submeta(
+            group_id,
+            current.as_ref().and_then(|g| g.sub_url.as_deref()),
+            current.as_ref().and_then(|g| g.user_agent.as_deref()),
+            current.as_ref().and_then(|g| g.extra_headers.as_deref()),
+            userinfo_json.as_deref(),
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    Ok(subscribe::SubscribeOutcome {
+        url,
+        content_type,
+        userinfo,
+        group_id: Some(group_id),
+        parsed,
+    })
+}
+
 fn unix_now_secs() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
@@ -641,8 +772,18 @@ async fn subscribe(
                 .map(|u| serde_json::to_string(u).unwrap_or_default());
             (nodes, ui)
         };
+        // split UA out of the header map for the dedicated column
+        let mut extras = headers.clone();
+        let ua = extras.remove("User-Agent").filter(|v| !v.trim().is_empty());
+        let extras_json = if extras.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(&extras).unwrap_or_default())
+        };
         let url_for_db = url.clone();
-        let userinfo_json = userinfo_json.clone();
+        let ua2 = ua.clone();
+        let extras_json2 = extras_json.clone();
+        let userinfo_json2 = userinfo_json.clone();
         Some(
             tauri::async_runtime::spawn_blocking(move || -> Result<i64, String> {
                 let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
@@ -650,9 +791,14 @@ async fn subscribe(
                     .create_group(&name, Some(&url_for_db))
                     .map_err(|e| e.to_string())?;
                 db.upsert_nodes(gid, &nodes).map_err(|e| e.to_string())?;
-                let updated = chrono_like_now();
-                db.touch_group_meta(gid, userinfo_json.as_deref(), &updated)
-                    .map_err(|e| e.to_string())?;
+                db.update_group_submeta(
+                    gid,
+                    Some(&url_for_db),
+                    ua2.as_deref(),
+                    extras_json2.as_deref(),
+                    userinfo_json2.as_deref(),
+                )
+                .map_err(|e| e.to_string())?;
                 Ok(gid)
             })
             .await
@@ -669,16 +815,6 @@ async fn subscribe(
         group_id,
         parsed,
     })
-}
-
-// Small RFC3339-ish timestamp without pulling in chrono.
-fn chrono_like_now() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    format!("{secs}")
 }
 
 // ---- app bootstrap ------------------------------------------------------
@@ -746,6 +882,8 @@ pub fn run() {
             core_version,
             parse_text,
             subscribe,
+            subscription_edit,
+            subscription_refresh,
             groups_list,
             nodes_list,
             import_to_group,

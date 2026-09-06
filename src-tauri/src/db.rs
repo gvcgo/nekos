@@ -15,6 +15,11 @@ pub struct Group {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sub_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_agent: Option<String>,
+    /// JSON map of extra headers (without User-Agent).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra_headers: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub sub_userinfo: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
@@ -131,22 +136,41 @@ impl Db {
                 PRIMARY KEY (group_id, node_id)
             );
             INSERT OR IGNORE INTO groups (id, name) VALUES (1, '默认分组');",
-        )
+        )?;
+        self.ensure_column("groups", "user_agent", "TEXT")?;
+        self.ensure_column("groups", "extra_headers", "TEXT")?;
+        Ok(())
+    }
+
+    /// ALTER TABLE ADD COLUMN (SQLite has no IF NOT EXISTS here).
+    fn ensure_column(&self, table: &str, column: &str, decl: &str) -> rusqlite::Result<()> {
+        let mut stmt = self.conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let names: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<_, _>>()?;
+        if !names.iter().any(|n| n == column) {
+            self.conn
+                .execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"), [])?;
+        }
+        Ok(())
     }
 
     // ---- groups ----
 
     pub fn list_groups(&self) -> rusqlite::Result<Vec<Group>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, sub_url, sub_userinfo, updated_at FROM groups ORDER BY id",
+            "SELECT id, name, sub_url, user_agent, extra_headers, sub_userinfo, updated_at
+             FROM groups ORDER BY id",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(Group {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 sub_url: row.get(2)?,
-                sub_userinfo: row.get(3)?,
-                updated_at: row.get(4)?,
+                user_agent: row.get(3)?,
+                extra_headers: row.get(4)?,
+                sub_userinfo: row.get(5)?,
+                updated_at: row.get(6)?,
             })
         })?;
         rows.collect()
@@ -187,30 +211,39 @@ impl Db {
     pub fn group(&self, id: i64) -> rusqlite::Result<Option<Group>> {
         self.conn
             .query_row(
-                "SELECT id, name, sub_url, sub_userinfo, updated_at FROM groups WHERE id = ?1",
+                "SELECT id, name, sub_url, user_agent, extra_headers, sub_userinfo, updated_at
+                 FROM groups WHERE id = ?1",
                 params![id],
                 |row| {
                     Ok(Group {
                         id: row.get(0)?,
                         name: row.get(1)?,
                         sub_url: row.get(2)?,
-                        sub_userinfo: row.get(3)?,
-                        updated_at: row.get(4)?,
+                        user_agent: row.get(3)?,
+                        extra_headers: row.get(4)?,
+                        sub_userinfo: row.get(5)?,
+                        updated_at: row.get(6)?,
                     })
                 },
             )
             .optional()
     }
 
-    pub fn touch_group_meta(
+    /// Persist a group's subscription meta (url, ua, extra headers,
+    /// userinfo) and bump updated_at.
+    pub fn update_group_submeta(
         &self,
         id: i64,
+        sub_url: Option<&str>,
+        user_agent: Option<&str>,
+        extra_headers: Option<&str>,
         userinfo: Option<&str>,
-        updated_at: &str,
     ) -> rusqlite::Result<()> {
         self.conn.execute(
-            "UPDATE groups SET sub_userinfo = ?2, updated_at = ?3 WHERE id = ?1",
-            params![id, userinfo, updated_at],
+            "UPDATE groups SET sub_url = ?2, user_agent = ?3, extra_headers = ?4,
+             sub_userinfo = ?5, updated_at = strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime')
+             WHERE id = ?1",
+            params![id, sub_url, user_agent, extra_headers, userinfo],
         )?;
         Ok(())
     }
@@ -279,7 +312,14 @@ impl Db {
         Ok(())
     }
 
-    // ---- latency (persisted speed-test results) ----
+    /// Replace a group's node set with freshly fetched subscription nodes
+    /// (old latency results for the group are dropped too).
+    pub fn replace_group_nodes(&self, group_id: i64, nodes: &[NewNode]) -> rusqlite::Result<usize> {
+        self.conn.execute("DELETE FROM nodes WHERE group_id = ?1", params![group_id])?;
+        self.conn
+            .execute("DELETE FROM latency WHERE group_id = ?1", params![group_id])?;
+        self.upsert_nodes(group_id, nodes)
+    }
 
     pub fn upsert_latency(
         &self,

@@ -1,18 +1,42 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
-import { subscribe, type Group, type Node, type SubscribeResult } from "../api";
+import { computed, onMounted, ref } from "vue";
+import {
+  createGroup,
+  deleteGroup,
+  groupsList,
+  subscribe,
+  subscriptionEdit,
+  subscriptionRefresh,
+  type Group,
+  type SubUserInfo,
+  type SubscribeResult,
+} from "../api";
 
 const emit = defineEmits<{ (e: "saved", groupId: number): void }>();
 
-const url = ref("");
-const result = ref<SubscribeResult | null>(null);
-const busy = ref(false);
-const error = ref("");
-const ua = ref("clash-verge/v2.5.2");
-const extraHeaders = ref("");
-const saveName = ref("");
-const saveBusy = ref(false);
-const saveDone = ref<Group | null>(null);
+// ---- existing subscription list ----------------------------------------
+
+const subs = ref<Group[]>([]);
+const refreshing = ref<Record<number, boolean>>({});
+const err = ref("");
+const msg = ref("");
+
+const subscriptions = computed(() =>
+  subs.value.filter((g) => (g.sub_url ?? "").trim().length > 0),
+);
+
+async function loadSubs() {
+  subs.value = await groupsList();
+}
+
+function userInfo(g: Group): SubUserInfo | null {
+  if (!g.sub_userinfo) return null;
+  try {
+    return JSON.parse(g.sub_userinfo) as SubUserInfo;
+  } catch {
+    return null;
+  }
+}
 
 function fmtBytes(n: number): string {
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -25,172 +49,295 @@ function fmtBytes(n: number): string {
   return `${v.toFixed(v >= 100 ? 0 : 1)} ${units[u]}`;
 }
 
-function fmtExpire(secs: number): string {
-  return new Date(secs * 1000).toLocaleString();
+async function delSub(g: Group) {
+  if (!confirm(`删除订阅「${g.name}」及其节点？`)) return;
+  err.value = "";
+  try {
+    await deleteGroup(g.id);
+    await loadSubs();
+  } catch (e) {
+    err.value = String(e);
+  }
 }
+
+async function refreshSub(g: Group) {
+  refreshing.value[g.id] = true;
+  err.value = "";
+  msg.value = "";
+  try {
+    const out: SubscribeResult = await subscriptionRefresh(g.id);
+    msg.value = `「${g.name}」已更新：${out.nodes.length} 节点，${out.errors.length} 错误`;
+    await loadSubs();
+  } catch (e) {
+    err.value = String(e);
+  } finally {
+    refreshing.value[g.id] = false;
+  }
+}
+
+// ---- inline editor ------------------------------------------------------
+
+const editingId = ref<number | null>(null);
+const editName = ref("");
+const editUrl = ref("");
+const editUA = ref("");
+const editExtrasText = ref("");
+const savingEdit = ref(false);
+
+function extrasToText(json?: string): string {
+  if (!json) return "";
+  try {
+    const map = JSON.parse(json) as Record<string, string>;
+    return Object.entries(map)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join("\n");
+  } catch {
+    return json;
+  }
+}
+
+function extrasToJson(text: string): string {
+  const map: Record<string, string> = {};
+  for (const line of text.split("\n")) {
+    const t = line.trim();
+    if (!t || t.startsWith("#")) continue;
+    const idx = t.indexOf(":");
+    if (idx > 0) map[t.slice(0, idx).trim()] = t.slice(idx + 1).trim();
+  }
+  return JSON.stringify(map);
+}
+
+function startEdit(g: Group) {
+  editingId.value = g.id;
+  editName.value = g.name;
+  editUrl.value = g.sub_url ?? "";
+  editUA.value = g.user_agent ?? "";
+  editExtrasText.value = extrasToText(g.extra_headers);
+  err.value = "";
+}
+
+function cancelEdit() {
+  editingId.value = null;
+}
+
+async function saveEdit() {
+  if (!editingId.value) return;
+  savingEdit.value = true;
+  err.value = "";
+  msg.value = "";
+  try {
+    await subscriptionEdit(
+      editingId.value,
+      editName.value.trim(),
+      editUrl.value.trim(),
+      editUA.value,
+      extrasToJson(editExtrasText.value),
+    );
+    msg.value = "已保存订阅配置（点「更新」按新配置重新抓取）";
+    await loadSubs();
+  } catch (e) {
+    err.value = String(e);
+  } finally {
+    savingEdit.value = false;
+  }
+}
+
+// ---- new subscription ---------------------------------------------------
+
+const url = ref("");
+const ua = ref("clash-verge/v2.5.2");
+const extraHeaders = ref("");
+const saveName = ref("");
+const fetchBusy = ref(false);
+const preview = ref<SubscribeResult | null>(null);
 
 function buildHeaders(): Record<string, string> {
   const headers: Record<string, string> = {};
   if (ua.value.trim()) headers["User-Agent"] = ua.value.trim();
-  for (const line of extraHeaders.value.split("\n")) {
-    const t = line.trim();
-    if (!t || t.startsWith("#")) continue;
-    const idx = t.indexOf(":");
-    if (idx > 0) headers[t.slice(0, idx).trim()] = t.slice(idx + 1).trim();
-  }
+  const extras = extrasToJson(extraHeaders.value);
+  if (extras !== "{}") Object.assign(headers, JSON.parse(extras));
   return headers;
-}
-
-async function doFetch() {
-  busy.value = true;
-  error.value = "";
-  result.value = null;
-  try {
-    result.value = await subscribe(url.value.trim(), buildHeaders());
-    saveName.value = suggestName(result.value.url);
-  } catch (e) {
-    error.value = String(e);
-  } finally {
-    busy.value = false;
-  }
 }
 
 function suggestName(subUrl: string): string {
   try {
-    const u = new URL(subUrl);
-    return u.hostname;
+    return new URL(subUrl).hostname;
   } catch {
     return "新订阅";
   }
 }
 
-async function doSave() {
-  saveBusy.value = true;
-  saveDone.value = null;
+async function doFetch() {
+  fetchBusy.value = true;
+  err.value = "";
+  preview.value = null;
   try {
-    const out = await subscribe(url.value.trim(), buildHeaders(), saveName.value.trim());
-    saveDone.value = { id: out.group_id ?? 0, name: saveName.value.trim() };
-    if (out.group_id) emit("saved", out.group_id);
+    preview.value = await subscribe(url.value.trim(), buildHeaders());
+    if (!saveName.value.trim()) saveName.value = suggestName(preview.value.url);
   } catch (e) {
-    error.value = String(e);
+    err.value = String(e);
   } finally {
-    saveBusy.value = false;
+    fetchBusy.value = false;
   }
 }
 
-onMounted(() => {
-  // nothing global needed; component is self-sufficient
-});
+async function doSaveNew() {
+  fetchBusy.value = true;
+  err.value = "";
+  try {
+    const out = await subscribe(
+      url.value.trim(),
+      buildHeaders(),
+      saveName.value.trim(),
+    );
+    if (out.group_id) {
+      msg.value = `已创建订阅「${saveName.value.trim()}」（${out.nodes.length} 节点）`;
+      preview.value = null;
+      url.value = "";
+      saveName.value = "";
+      await loadSubs();
+      emit("saved", out.group_id);
+    }
+  } catch (e) {
+    err.value = String(e);
+  } finally {
+    fetchBusy.value = false;
+  }
+}
+
+onMounted(loadSubs);
 </script>
 
 <template>
   <div class="sub-page">
-    <div class="toolbar">
+    <div class="head">
       <h1>订阅</h1>
-      <span class="hint">抓取订阅地址并解析节点；可带自定义请求头</span>
+      <span class="hint">{{ subscriptions.length }} 个订阅组</span>
+      <span class="spacer"></span>
+      <span v-if="msg" class="ok">{{ msg }}</span>
+      <span v-if="err" class="err">{{ err }}</span>
     </div>
 
-    <div class="import">
-      <div class="row">
-        <input v-model="url" class="url-input" placeholder="https://example.com/xxxx/sub 或 ...?clash=2" @keydown.enter="doFetch" />
-        <button :disabled="busy || !url.trim()" @click="doFetch">{{ busy ? "抓取中…" : "抓取解析" }}</button>
-      </div>
-
-      <details class="headers">
-        <summary>请求头（部分订阅校验 User-Agent）</summary>
-        <div class="header-grid">
-          <label>User-Agent</label>
-          <input v-model="ua" class="url-input" placeholder="如 clash-verge/v2.5.2" />
-        </div>
-        <label class="extra-label">额外请求头（每行 Key: Value）</label>
-        <textarea v-model="extraHeaders" rows="2" class="extra-headers" placeholder="Referer: https://example.com&#10;Authorization: Bearer xxxx" />
-      </details>
-
-      <span v-if="error" class="err">{{ error }}</span>
-
-      <div v-if="result" class="result">
-        <div class="result-head">
-          <strong>解析结果</strong>
-          <span>节点 {{ result.nodes.length }} · 错误 {{ result.errors.length }}</span>
-        </div>
-        <div v-if="result.userinfo" class="userinfo">
-          <span>流量 {{ fmtBytes((result.userinfo.upload || 0) + (result.userinfo.download || 0)) }} /
-            {{ fmtBytes(result.userinfo.total || 0) }}</span>
-          <span v-if="result.userinfo.expire">到期 {{ fmtExpire(result.userinfo.expire) }}</span>
-        </div>
-        <div v-if="result.nodes.length" class="save-row">
-          <input v-model="saveName" class="url-input save-name" placeholder="保存为新分组名称" />
-          <button :disabled="saveBusy || !saveName.trim()" @click="doSave">
-            {{ saveBusy ? "保存中…" : "保存到新分组" }}
-          </button>
-          <span v-if="saveDone" class="ok">已保存到「{{ saveDone.name }}」</span>
-        </div>
-        <table>
-          <thead>
-            <tr><th>类型</th><th>备注</th><th>ID</th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="n in result.nodes.slice(0, 200)" :key="n.id">
-              <td><code>{{ n.type }}</code></td>
-              <td>{{ n.remark }}</td>
-              <td class="mono">{{ n.id }}</td>
+    <!-- managed subscription list -->
+    <section v-if="subscriptions.length" class="list">
+      <table>
+        <thead>
+          <tr><th>名称</th><th>地址</th><th>流量/到期</th><th>更新于</th><th></th></tr>
+        </thead>
+        <tbody>
+          <template v-for="g in subscriptions" :key="g.id">
+            <tr>
+              <td>{{ g.name }}</td>
+              <td class="mono url" :title="g.sub_url">{{ g.sub_url }}</td>
+              <td class="mono">
+                <template v-if="userInfo(g)">
+                  {{ fmtBytes((userInfo(g)!.upload || 0) + (userInfo(g)!.download || 0)) }} /
+                  {{ fmtBytes(userInfo(g)!.total || 0)
+                  }}<span v-if="userInfo(g)!.expire"> · {{ new Date(userInfo(g)!.expire! * 1000).toLocaleDateString() }}</span>
+                </template>
+                <span v-else class="dim">—</span>
+              </td>
+              <td class="mono">{{ g.updated_at ?? "—" }}</td>
+              <td class="ops">
+                <button class="ghost mini" @click="startEdit(g)">编辑</button>
+                <button class="ghost mini" :disabled="refreshing[g.id]" @click="refreshSub(g)">
+                  {{ refreshing[g.id] ? "更新中…" : "更新" }}
+                </button>
+                <button class="ghost mini" @click="emit('saved', g.id)">节点</button>
+                <button class="ghost mini danger" @click="delSub(g)">删除</button>
+              </td>
             </tr>
-          </tbody>
-        </table>
-        <div v-if="result.nodes.length > 200" class="truncated">… 仅预览前 200 条，保存将入库全部 {{ result.nodes.length }} 条</div>
-        <ul v-if="result.errors.length" class="errs">
-          <li v-for="(e, i) in result.errors" :key="i">
-            {{ e.reason }} — <span class="mono">{{ e.snippet }}</span>
-          </li>
-        </ul>
-      </div>
-    </div>
+
+            <!-- inline editor -->
+            <tr v-if="editingId === g.id" class="editor-row">
+              <td colspan="5">
+                <div class="editor">
+                  <div class="grid">
+                    <label>名称</label>
+                    <input v-model="editName" class="inp" />
+                    <label>订阅地址</label>
+                    <input v-model="editUrl" class="inp mono" placeholder="https://example.com/sub 或 ...?clash=2" />
+                    <label>User-Agent</label>
+                    <input v-model="editUA" class="inp mono" placeholder="如 clash-verge/v2.5.2（留空则不发送）" />
+                    <label>额外请求头</label>
+                    <textarea v-model="editExtrasText" rows="2" class="inp mono" placeholder="Referer: https://example.com&#10;Authorization: Bearer xxx" />
+                  </div>
+                  <div class="btns">
+                    <button :disabled="savingEdit" @click="saveEdit">{{ savingEdit ? "保存中…" : "保存修改" }}</button>
+                    <button class="ghost" @click="cancelEdit">取消</button>
+                  </div>
+                </div>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </section>
+    <div v-else class="empty">还没有订阅组 — 在下方「抓取新订阅」创建。</div>
+
+    <!-- new subscription -->
+    <section class="new">
+      <details>
+        <summary>＋ 抓取新订阅</summary>
+        <div class="new-form">
+          <div class="row">
+            <input v-model="url" class="inp" placeholder="https://example.com/xxxx/sub 或 ...?clash=2" @keydown.enter="doFetch" />
+            <button :disabled="fetchBusy || !url.trim()" @click="doFetch">{{ fetchBusy ? "抓取中…" : "抓取解析" }}</button>
+          </div>
+          <div class="grid">
+            <label>User-Agent</label>
+            <input v-model="ua" class="inp mono" placeholder="如 clash-verge/v2.5.2" />
+            <label>额外请求头</label>
+            <textarea v-model="extraHeaders" rows="2" class="inp mono" placeholder="Referer: https://example.com&#10;每行 Key: Value" />
+          </div>
+          <div v-if="preview" class="preview">
+            <span>解析 {{ preview.nodes.length }} 节点 · 错误 {{ preview.errors.length }}</span>
+            <input v-model="saveName" class="inp mono" placeholder="保存为订阅组名称" />
+            <button :disabled="!saveName.trim()" @click="doSaveNew">保存为新订阅组</button>
+          </div>
+        </div>
+      </details>
+    </section>
   </div>
 </template>
 
 <style scoped>
-.sub-page {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.toolbar {
-  display: flex;
-  align-items: baseline;
-  gap: 14px;
-}
-.toolbar h1 { margin: 0; font-size: 20px; }
+.sub-page { display: flex; flex-direction: column; gap: 12px; max-width: 980px; }
+.head { display: flex; align-items: baseline; gap: 12px; }
+.head h1 { margin: 0 8px 0 0; font-size: 20px; }
 .hint { opacity: 0.6; font-size: 12px; }
-.import { max-width: 780px; }
-.row { display: flex; align-items: center; gap: 10px; }
-button {
-  border: 0; border-radius: 6px; background: var(--accent); color: #fff;
-  padding: 7px 14px; font-size: 13px; cursor: pointer; flex: none;
-}
-button:disabled { opacity: 0.5; cursor: default; }
-.url-input {
-  flex: 1; min-width: 0;
-  border: 1px solid var(--border); border-radius: 8px; padding: 8px;
-  background: transparent; color: inherit;
-  font-family: ui-monospace, monospace; font-size: 12px;
-}
-.save-name { max-width: 300px; }
-.headers { margin: 10px 0; font-size: 12px; }
-.headers summary { cursor: pointer; opacity: 0.8; }
-.header-grid { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
-.header-grid label { width: 84px; flex: none; }
-.extra-label { display: block; margin: 4px 0; }
-.extra-headers { width: 100%; min-height: 40px; border: 1px solid var(--border); border-radius: 8px; padding: 6px; background: transparent; color: inherit; font-family: ui-monospace, monospace; font-size: 12px; }
+.spacer { flex: 1; }
 .err { color: #ef4444; font-size: 12px; }
 .ok { color: #22c55e; font-size: 12px; }
-.result { margin-top: 12px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
-.result-head { display: flex; justify-content: space-between; padding: 8px 10px; background: rgba(0,0,0,0.04); font-size: 12px; }
-.userinfo { display: flex; gap: 18px; padding: 8px 10px; font-size: 12px; background: rgba(34,197,94,0.06); border-top: 1px solid var(--border); }
-.save-row { display: flex; align-items: center; gap: 10px; padding: 10px; border-top: 1px solid var(--border); }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th, td { text-align: left; padding: 6px 10px; border-top: 1px solid var(--border); }
+th, td { text-align: left; padding: 7px 8px; border-top: 1px solid var(--border); }
 th { font-size: 11px; text-transform: uppercase; opacity: 0.7; }
+.url { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mono { font-family: ui-monospace, monospace; font-size: 11px; }
-.truncated { padding: 6px 10px; font-size: 11px; opacity: 0.6; }
-.errs { margin: 0; padding: 8px 10px 8px 26px; font-size: 12px; color: #ef4444; }
+.dim { opacity: 0.5; }
+.ops { white-space: nowrap; text-align: right; }
+button {
+  border: 0; border-radius: 6px; background: var(--accent); color: #fff;
+  padding: 5px 12px; font-size: 12px; cursor: pointer;
+}
+button:disabled { opacity: 0.5; cursor: default; }
+.ghost { background: transparent; border: 1px solid var(--border); color: inherit; }
+.danger { color: #ef4444; border-color: rgba(239, 68, 68, 0.4); }
+.mini { padding: 2px 8px; font-size: 12px; margin-left: 4px; }
+.editor-row td { background: rgba(0, 0, 0, 0.03); }
+.editor { display: flex; flex-direction: column; gap: 8px; }
+.grid { display: grid; grid-template-columns: 110px 1fr; gap: 6px 10px; align-items: center; }
+.grid label { font-size: 12px; opacity: 0.85; }
+.inp {
+  border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px;
+  background: transparent; color: inherit; font-size: 12px; width: 100%;
+  font-family: inherit;
+}
+.inp.mono { font-family: ui-monospace, monospace; font-size: 11px; }
+.btns { display: flex; gap: 8px; }
+.empty { padding: 18px; text-align: center; opacity: 0.55; font-size: 13px; border: 1px dashed var(--border); border-radius: 8px; }
+.new summary { cursor: pointer; font-size: 14px; margin-bottom: 8px; }
+.new-form { display: flex; flex-direction: column; gap: 8px; max-width: 760px; }
+.row { display: flex; gap: 8px; }
+.preview { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12px; }
 </style>

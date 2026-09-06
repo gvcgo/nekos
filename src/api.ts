@@ -63,8 +63,31 @@ export interface Group {
   id: number;
   name: string;
   sub_url?: string;
+  user_agent?: string;
+  extra_headers?: string;
   sub_userinfo?: string;
   updated_at?: string;
+}
+
+export function subscriptionEdit(
+  groupId: number,
+  name: string,
+  url: string,
+  userAgent: string,
+  extraHeadersJson: string,
+): Promise<Group> {
+  return invoke<Group>("subscription_edit", {
+    groupId,
+    name,
+    url,
+    userAgent,
+    extraHeadersJson,
+  });
+}
+
+/** Re-fetch with the subscription's saved URL + headers; replaces nodes. */
+export function subscriptionRefresh(groupId: number): Promise<SubscribeResult> {
+  return invoke<SubscribeResult>("subscription_refresh", { groupId });
 }
 
 export interface Node {
