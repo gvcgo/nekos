@@ -4,12 +4,14 @@ import {
   coreStatus,
   coreStop,
   coreStart,
+  createGroup,
   deleteGroup,
   deleteNode,
   groupsList,
   importToGroup,
   measureNode,
   nodesList,
+  renameGroup,
   setNodeCurrent,
   settingsGet,
   settingsSet,
@@ -93,14 +95,13 @@ async function doImport() {
   }
 }
 
-async function pickNode(nodeId: string) {
-  await setNodeCurrent(currentGroupId(), nodeId);
-  await loadSettings();
-}
-
 async function removeNode(nodeId: string) {
   await deleteNode(currentGroupId(), nodeId);
   await reloadNodes();
+}
+
+function currentGroup(): Group {
+  return groups.value.find((g) => g.id === currentGroupId()) ?? groups.value[0];
 }
 
 async function removeGroup() {
@@ -111,13 +112,29 @@ async function removeGroup() {
   await loadAll();
 }
 
-function currentGroup(): Group {
-  return groups.value.find((g) => g.id === currentGroupId()) ?? groups.value[0];
+async function newGroup() {
+  const name = prompt("新分组名称", "");
+  if (!name?.trim()) return;
+  const g = await createGroup(name.trim());
+  await loadAll();
+  if (g.id) await switchGroup(g.id);
 }
+
+async function renameCurrentGroup() {
+  const gid = currentGroupId();
+  if (gid === 1) return;
+  const name = prompt("重命名分组", currentGroup().name);
+  if (!name?.trim()) return;
+  await renameGroup(gid, name.trim());
+  await loadAll();
+}
+
+const switchMsg = ref("");
 
 async function toggleStart() {
   startBusy.value = true;
   err.value = "";
+  switchMsg.value = "";
   try {
     if (status.value.running) {
       status.value = await coreStop();
@@ -130,6 +147,26 @@ async function toggleStart() {
   } finally {
     startBusy.value = false;
     await refreshStatus();
+  }
+}
+
+async function pickNode(nodeId: string) {
+  await setNodeCurrent(currentGroupId(), nodeId);
+  await loadSettings();
+  if (status.value.running) {
+    // live switch: rebuild the core with the new selection
+    startBusy.value = true;
+    switchMsg.value = "";
+    try {
+      const run = await coreStart();
+      status.value = run.status;
+      switchMsg.value = `已切换代理到「${nodes.value.find((n) => n.id === nodeId)?.remark ?? nodeId}」`;
+    } catch (e) {
+      err.value = String(e);
+    } finally {
+      startBusy.value = false;
+      await refreshStatus();
+    }
   }
 }
 
@@ -172,7 +209,11 @@ onMounted(loadAll);
       <select class="group-select" :value="currentGroupId()" @change="switchGroup(Number(($event.target as HTMLSelectElement).value))">
         <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}</option>
       </select>
-      <button v-if="currentGroupId() !== 1" class="danger ghost" title="删除分组（含节点）" @click="removeGroup">✕</button>
+      <span class="group-ops" title="管理分组">
+        <button class="ghost mini" @click="newGroup">＋ 新建</button>
+        <button v-if="currentGroupId() !== 1" class="ghost mini" @click="renameCurrentGroup">✎ 改名</button>
+        <button v-if="currentGroupId() !== 1" class="ghost mini danger" title="删除分组（含节点）" @click="removeGroup">✕ 删除</button>
+      </span>
 
       <span class="spacer"></span>
 
@@ -180,8 +221,9 @@ onMounted(loadAll);
         <span class="dot"></span>
         {{ status.running ? `运行中 · 系统代理${status.proxy_enabled ? "开" : "关"}` : "已停止" }}
       </label>
-      <select class="group-select" :value="settings?.mode ?? 'global'" title="分流模式（rule 待 P1）" @change="changeMode(($event.target as HTMLSelectElement).value)">
-        <option value="global">全局</option>
+      <select class="group-select" :value="settings?.mode ?? 'global'" title="分流模式" @change="changeMode(($event.target as HTMLSelectElement).value)">
+        <option value="global">全局代理</option>
+        <option value="rule">规则(绕过大陆)</option>
         <option value="direct">直连</option>
       </select>
       <label class="proxy-toggle" title="启动 core 时启用系统代理">
@@ -189,10 +231,11 @@ onMounted(loadAll);
         系统代理
       </label>
       <button :disabled="startBusy || !nodes.length" @click="toggleStart">
-        {{ status.running ? "停止" : "启动" }}
+        {{ status.running ? "停止" : startBusy ? "启动中…" : "启动" }}
       </button>
     </div>
 
+    <span v-if="switchMsg" class="ok">{{ switchMsg }}</span>
     <span v-if="err" class="err">{{ err }}</span>
 
     <section class="import-card">
@@ -249,6 +292,8 @@ button:disabled { opacity: 0.5; cursor: default; }
   border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px;
   background: transparent; color: inherit; font-size: 13px; max-width: 180px;
 }
+.group-ops { display: inline-flex; gap: 4px; }
+button.mini { padding: 3px 8px; font-size: 12px; }
 .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 4px 8px; border-radius: 20px; border: 1px solid var(--border); }
 .chip .dot { width: 8px; height: 8px; border-radius: 50%; background: #6b7280; }
 .chip.on .dot { background: #22c55e; }

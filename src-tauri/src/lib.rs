@@ -31,6 +31,7 @@ pub struct AppState {
     runtime: Arc<Mutex<RuntimeState>>,
     proxy_on: Arc<Mutex<bool>>,
     quitting: Arc<AtomicBool>,
+    data_dir: Arc<std::path::PathBuf>,
 }
 
 impl AppState {
@@ -44,7 +45,55 @@ impl AppState {
             runtime: Arc::new(Mutex::new(RuntimeState::default())),
             proxy_on: Arc::new(Mutex::new(false)),
             quitting: Arc::new(AtomicBool::new(false)),
+            data_dir: Arc::new(dir),
         })
+    }
+
+    /// Ensure the CN geoip/geosite rule-set files exist locally for rule
+    /// mode; downloads (with mirror fallback) and caches them under the
+    /// app data dir. Returns (geoip path, geosite path).
+    async fn ensure_rule_assets(&self) -> Result<(String, String), String> {
+        let dir = self.data_dir.join("rulesets");
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let files = [("cn-ip.srs", "geoip/cn.srs"), ("cn-site.srs", "geosite/cn.srs")];
+        let mut paths = Vec::new();
+        for (name, rel) in files {
+            let dest = dir.join(name);
+            let cached = dest.is_file()
+                && dest.metadata().map(|m| m.len() > 1000).unwrap_or(false);
+            if !cached {
+                let mirrors = [
+                    format!("https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/{rel}"),
+                    format!("https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/{rel}"),
+                ];
+                let mut last_err = "no mirror reachable".to_string();
+                let mut saved = false;
+                for url in mirrors {
+                    match self.ctl.client().get(&url).send().await {
+                        Ok(resp) if resp.status().is_success() => {
+                            match resp.bytes().await {
+                                Ok(bytes) if bytes.len() > 1000 => {
+                                    std::fs::write(&dest, &bytes).map_err(|e| e.to_string())?;
+                                    saved = true;
+                                    break;
+                                }
+                                Ok(_) => last_err = format!("{url}: body too small"),
+                                Err(e) => last_err = format!("{url}: {e}"),
+                            }
+                        }
+                        Ok(resp) => last_err = format!("{url}: HTTP {}", resp.status()),
+                        Err(e) => last_err = format!("{url}: {e}"),
+                    }
+                }
+                if !saved {
+                    return Err(format!(
+                        "下载规则集 {name} 失败: {last_err}（启用「规则」模式需要网络）"
+                    ));
+                }
+            }
+            paths.push(dest.to_string_lossy().into_owned());
+        }
+        Ok((paths[0].clone(), paths[1].clone()))
     }
 
     fn settings(&self) -> Settings {
@@ -55,7 +104,12 @@ impl AppState {
     }
 
     /// Assemble the `core run` session JSON from DB + settings.
-    fn build_session(&self, group_id: i64) -> Result<(String, String), String> {
+    /// rule_assets must be Some for rule mode (caller ensures downloads).
+    fn build_session(
+        &self,
+        group_id: i64,
+        rule_assets: Option<(String, String)>,
+    ) -> Result<(String, String), String> {
         let settings = self.settings();
         let db = self.db.lock().map_err(|_| "db lock poisoned".to_string())?;
         let nodes = db.list_nodes(group_id).map_err(|e| format!("db: {e}"))?;
@@ -75,21 +129,30 @@ impl AppState {
                 Some(serde_json::json!({ "id": n.id, "out": out }))
             })
             .collect();
-        let mode = if settings.mode == "direct" {
-            "direct"
-        } else {
-            "global"
+        let mode = match settings.mode.as_str() {
+            "direct" => "direct",
+            "rule" => "rule",
+            _ => "global",
         };
-        let session = serde_json::json!({
+        let mut session = serde_json::json!({
             "mode": mode,
             "inbound": { "listen": "127.0.0.1", "port": settings.port, "type": "mixed" },
             "entries": entries,
             "selected": selected,
             "log_level": "warn",
         });
+        if mode == "rule" {
+            let (ip, site) = rule_assets
+                .ok_or_else(|| "规则模式需要 CN 规则集，请重试以触发下载".to_string())?;
+            session["rule_assets"] = serde_json::json!({
+                "geoip_cn": ip,
+                "geosite_cn": site,
+            });
+        }
+        let selected_id = session["selected"].as_str().unwrap_or_default().to_string();
         Ok((
             serde_json::to_string(&session).map_err(|e| e.to_string())?,
-            selected,
+            selected_id,
         ))
     }
 }
@@ -225,6 +288,24 @@ async fn create_group(
     .await
     .map_err(|e| e.to_string())??;
     Ok(gid)
+}
+
+#[tauri::command]
+async fn rename_group(
+    state: State<'_, AppState>,
+    group_id: i64,
+    name: String,
+) -> Result<(), String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        db.lock()
+            .map_err(|_| "db lock poisoned".to_string())?
+            .rename_group(group_id, &name)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(())
 }
 
 #[tauri::command]
@@ -399,7 +480,12 @@ fn core_status_raw(state: &AppState) -> CoreStatusView {
 async fn core_start(state: State<'_, AppState>) -> Result<RunResult, String> {
     let settings = state.settings();
     let group_id = settings.current_group_id;
-    let (session_json, selected) = state.build_session(group_id)?;
+    let rule_assets = if settings.mode == "rule" {
+        Some(state.ensure_rule_assets().await?)
+    } else {
+        None
+    };
+    let (session_json, selected) = state.build_session(group_id, rule_assets)?;
 
     let ctl = state.ctl.clone();
     let runtime = state.runtime.clone();
@@ -595,6 +681,7 @@ pub fn run() {
             nodes_list,
             import_to_group,
             create_group,
+            rename_group,
             delete_group,
             delete_node,
             settings_get,

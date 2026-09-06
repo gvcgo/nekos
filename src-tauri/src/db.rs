@@ -129,6 +129,17 @@ impl Db {
         Ok(self.conn.last_insert_rowid())
     }
 
+    pub fn rename_group(&self, id: i64, name: &str) -> rusqlite::Result<()> {
+        if id == 1 {
+            return Ok(()); // keep the default group named as-is
+        }
+        self.conn.execute(
+            "UPDATE groups SET name = ?2 WHERE id = ?1",
+            params![id, name],
+        )?;
+        Ok(())
+    }
+
     pub fn delete_group(&self, id: i64) -> rusqlite::Result<()> {
         // Nodes cascade; the default group (1) stays to keep a sane state.
         if id == 1 {

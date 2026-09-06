@@ -34,13 +34,21 @@ type Entry struct {
 	Out json.RawMessage `json:"out"`
 }
 
+// RuleAssets points at locally cached sing-box binary rule-set files
+// (CN geoip/geosite) used by rule mode's bypass-mainland routing.
+type RuleAssets struct {
+	GeoipCn   string `json:"geoip_cn,omitempty"`
+	GeositeCn string `json:"geosite_cn,omitempty"`
+}
+
 // Session is the orchestrator->core contract for one running profile.
 type Session struct {
-	Mode     string        `json:"mode"` // global | direct | rule(P1)
-	Inbound  InboundConfig `json:"inbound"`
-	Entries  []Entry       `json:"entries"`
-	Selected string        `json:"selected"` // entry id; empty => direct
-	LogLevel string        `json:"log_level,omitempty"`
+	Mode       string        `json:"mode"` // global | direct | rule
+	Inbound    InboundConfig `json:"inbound"`
+	Entries    []Entry       `json:"entries"`
+	Selected   string        `json:"selected"` // entry id; empty => direct
+	LogLevel   string        `json:"log_level,omitempty"`
+	RuleAssets *RuleAssets   `json:"rule_assets,omitempty"`
 }
 
 // TagFor derives a stable, unique sing-box outbound tag from an entry id.
@@ -86,18 +94,65 @@ func AssembleJSON(sess *Session) (json.RawMessage, error) {
 	}
 
 	final := tagDirect
-	if sess.Mode == "global" && sess.Selected != "" {
+	var selectedOut map[string]any
+	if sess.Selected != "" && sess.Mode != "direct" {
 		target := findEntry(sess, sess.Selected)
 		if target == nil {
 			return nil, fmt.Errorf("selected entry %q not found", sess.Selected)
 		}
-		out := map[string]any{}
-		if err := json.Unmarshal(target.Out, &out); err != nil {
+		selectedOut = map[string]any{}
+		if err := json.Unmarshal(target.Out, &selectedOut); err != nil {
 			return nil, fmt.Errorf("entry %q: %w", sess.Selected, err)
 		}
-		out["tag"] = TagFor(sess.Selected)
-		cfg["outbounds"] = append(cfg["outbounds"].([]any), out)
+		selectedOut["tag"] = TagFor(sess.Selected)
+	}
+
+	switch sess.Mode {
+	case "global":
+		if selectedOut != nil {
+			cfg["outbounds"] = append(cfg["outbounds"].([]any), selectedOut)
+			final = TagFor(sess.Selected)
+		}
+	case "direct":
+		// keep final=direct
+	case "rule":
+		if sess.RuleAssets == nil || sess.RuleAssets.GeoipCn == "" || sess.RuleAssets.GeositeCn == "" {
+			return nil, fmt.Errorf("rule mode requires rule_assets (geoip_cn + geosite_cn)")
+		}
+		if selectedOut == nil {
+			return nil, fmt.Errorf("rule mode requires a selected node")
+		}
+		cfg["outbounds"] = append(cfg["outbounds"].([]any), selectedOut)
 		final = TagFor(sess.Selected)
+		// Bypass-mainland: CN ip/domain go direct; everything else -> node.
+		cfg["route"] = map[string]any{
+			"final": final,
+			"rules": []any{
+				map[string]any{
+					"rule_set": []string{"geoip-cn", "geosite-cn"},
+					"outbound": tagDirect,
+				},
+			},
+			"rule_set": []any{
+				map[string]any{"type": "local", "tag": "geoip-cn", "format": "binary", "path": sess.RuleAssets.GeoipCn},
+				map[string]any{"type": "local", "tag": "geosite-cn", "format": "binary", "path": sess.RuleAssets.GeositeCn},
+			},
+		}
+		// DNS: CN domains resolve via the system (direct path); anything
+		// unmatched is left as a hostname for the proxy exit to resolve.
+		cfg["dns"] = map[string]any{
+			"servers": []any{
+				map[string]any{"type": "local", "tag": "dns-direct"},
+			},
+			"rules": []any{
+				map[string]any{
+					"rule_set": []string{"geosite-cn"},
+					"server":   "dns-direct",
+				},
+			},
+		}
+	default:
+		return nil, fmt.Errorf("unknown mode %q", sess.Mode)
 	}
 
 	// Validate + normalize by decoding into typed sing-box options.
@@ -112,7 +167,9 @@ func AssembleJSON(sess *Session) (json.RawMessage, error) {
 	// possible without re-encode; so re-encode from raw (already validated).
 	parsed := map[string]any{}
 	_ = json.Unmarshal(raw, &parsed)
-	parsed["route"].(map[string]any)["final"] = final
+	if route, ok := parsed["route"].(map[string]any); ok {
+		route["final"] = final
+	}
 	out, err := json.Marshal(parsed)
 	if err != nil {
 		return nil, err

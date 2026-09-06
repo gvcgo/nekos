@@ -87,6 +87,10 @@ export function deleteGroup(groupId: number): Promise<void> {
   return invoke<void>("delete_group", { groupId });
 }
 
+export function renameGroup(groupId: number, name: string): Promise<void> {
+  return invoke<void>("rename_group", { groupId, name });
+}
+
 export function nodesList(groupId: number): Promise<Node[]> {
   return invoke<Node[]>("nodes_list", { groupId });
 }
