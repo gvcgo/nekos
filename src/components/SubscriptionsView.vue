@@ -94,6 +94,119 @@ async function doCopyToGroup() {
   }
 }
 
+// ---- multi-subscription node picker ----
+
+const multiOpen = ref(false);
+const srcCheck = ref<Record<number, boolean>>({});
+const srcCache = ref<Record<number, Node[]>>({});
+const chosen = ref<Record<string, boolean>>({});
+const query = ref("");
+const multiTarget = ref<number | null>(null);
+const multiBusy = ref(false);
+
+const checkedSrcIds = computed(() =>
+  subscriptions.value.filter((g) => srcCheck.value[g.id]).map((g) => g.id),
+);
+
+/** nodes of all checked sources, de-duplicated by id (keep first). */
+const mergedNodes = computed<Node[]>(() => {
+  const seen = new Set<string>();
+  const out: Node[] = [];
+  for (const id of checkedSrcIds.value) {
+    for (const n of srcCache.value[id] ?? []) {
+      if (!seen.has(n.id)) {
+        seen.add(n.id);
+        out.push(n);
+      }
+    }
+  }
+  return out;
+});
+
+const filteredMerged = computed(() => {
+  const q = query.value.trim().toLowerCase();
+  if (!q) return mergedNodes.value;
+  return mergedNodes.value.filter(
+    (n) =>
+      n.remark.toLowerCase().includes(q) ||
+      n.type.toLowerCase().includes(q),
+  );
+});
+
+const chosenCount = computed(
+  () => mergedNodes.value.filter((n) => chosen.value[n.id]).length,
+);
+
+function openMulti() {
+  multiOpen.value = true;
+  err.value = "";
+  msg.value = "";
+  query.value = "";
+  const sc: Record<number, boolean> = {};
+  for (const g of subscriptions.value) sc[g.id] = true;
+  srcCheck.value = sc;
+  srcCache.value = {};
+  chosen.value = {};
+  multiTarget.value = allGroups.value[0]?.id ?? null;
+  void loadMultiSources();
+}
+
+function closeMulti() {
+  multiOpen.value = false;
+  srcCache.value = {};
+}
+
+async function loadMultiSources() {
+  for (const id of checkedSrcIds.value) {
+    if (srcCache.value[id]) continue;
+    try {
+      srcCache.value[id] = await nodesList(id);
+      for (const n of srcCache.value[id]!) chosen.value[n.id] = true;
+    } catch (e) {
+      err.value = String(e);
+    }
+  }
+}
+
+async function onToggleSource(g: Group, on: boolean) {
+  srcCheck.value[g.id] = on;
+  if (on) await loadMultiSources();
+}
+
+function toggleAllVisible(on: boolean) {
+  for (const n of filteredMerged.value) chosen.value[n.id] = on;
+}
+
+async function doMultiCopy() {
+  if (multiTarget.value == null) {
+    err.value = "没有目标分组（先在服务页新建）";
+    return;
+  }
+  const target = multiTarget.value;
+  let added = 0;
+  let dup = 0;
+  multiBusy.value = true;
+  err.value = "";
+  try {
+    for (const srcId of checkedSrcIds.value) {
+      const idsHere = (srcCache.value[srcId] ?? [])
+        .filter((n) => chosen.value[n.id])
+        .map((n) => n.id);
+      if (!idsHere.length) continue;
+      const out = await copyNodes(srcId, target, idsHere);
+      added += out.inserted;
+      dup += out.duplicated;
+    }
+    const targetName = allGroups.value.find((g) => g.id === target)?.name ?? "";
+    msg.value = `已合并导入 ${added} 个节点到「${targetName}」${dup ? `（${dup} 个已存在跳过）` : ""}`;
+    closeMulti();
+  } catch (e) {
+    err.value = String(e);
+  } finally {
+    multiBusy.value = false;
+  }
+}
+
 function userInfo(g: Group): SubUserInfo | null {
   if (!g.sub_userinfo) return null;
   try {
@@ -278,6 +391,7 @@ onMounted(loadSubs);
     <div class="head">
       <h1>订阅</h1>
       <span class="hint">{{ subscriptions.length }} 个订阅组</span>
+      <button class="mini accent" @click="openMulti">多订阅选节点入组…</button>
       <span class="spacer"></span>
       <span v-if="msg" class="ok">{{ msg }}</span>
       <span v-if="err" class="err">{{ err }}</span>
@@ -372,6 +486,59 @@ onMounted(loadSubs);
       </div>
     </div>
 
+    <!-- multi-subscription node picker -->
+    <div v-if="multiOpen" class="dialog-mask" @click.self="closeMulti">
+      <div class="dialog wide">
+        <h3>从多个订阅选择节点导入分组</h3>
+        <div class="multi-layout">
+          <div class="src-col">
+            <div class="src-title">订阅源</div>
+            <label v-for="g in subscriptions" :key="g.id" class="pick">
+              <input type="checkbox" :checked="srcCheck[g.id]" @change="onToggleSource(g, ($event.target as HTMLInputElement).checked)" />
+              <span class="src-name">{{ g.name }}</span>
+              <span v-if="srcCache[g.id]" class="dim">{{ srcCache[g.id]!.length }}</span>
+            </label>
+          </div>
+          <div class="node-col">
+            <div class="dialog-row">
+              <input v-model="query" class="inp" placeholder="搜索备注 / 类型（如 HKG、trojan）" />
+            </div>
+            <div class="dialog-actions">
+              <span>已选 {{ chosenCount }} / {{ mergedNodes.length }}</span>
+              <span class="spacer"></span>
+              <button class="ghost mini" @click="toggleAllVisible(true)">全选(当前筛选)</button>
+              <button class="ghost mini" @click="toggleAllVisible(false)">清空筛选</button>
+            </div>
+            <div class="node-pick">
+              <label v-for="n in filteredMerged.slice(0, 600)" :key="n.id" class="pick">
+                <input type="checkbox" v-model="chosen[n.id]" />
+                <code>{{ n.type }}</code> {{ n.remark }}
+              </label>
+              <div v-if="filteredMerged.length > 600" class="truncated">
+                仅展示前 600 条（共 {{ filteredMerged.length }}），搜索可缩小范围
+              </div>
+              <div v-if="!filteredMerged.length" class="truncated">没有匹配节点</div>
+            </div>
+          </div>
+        </div>
+        <div class="dialog-row">
+          <label>导入到分组</label>
+          <select v-model="multiTarget" class="inp sel">
+            <option v-for="g in allGroups" :key="g.id" :value="g.id">{{ g.name }}</option>
+          </select>
+          <span class="spacer"></span>
+          <span v-if="err" class="err">{{ err }}</span>
+        </div>
+        <div class="dialog-btns">
+          <span class="spacer"></span>
+          <button class="ghost" @click="closeMulti">取消</button>
+          <button :disabled="multiBusy || multiTarget == null || !chosenCount" @click="doMultiCopy">
+            {{ multiBusy ? "导入中…" : `导入 ${chosenCount} 个节点` }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- new subscription -->
     <section class="new">
       <details>
@@ -447,6 +614,16 @@ button:disabled { opacity: 0.5; cursor: default; }
   width: min(620px, 92vw); max-height: 80vh; display: flex; flex-direction: column; gap: 10px;
 }
 .dialog h3 { margin: 0; font-size: 15px; }
+.dialog.wide { width: min(860px, 94vw); }
+.multi-layout { display: flex; gap: 12px; min-height: 320px; }
+.src-col { width: 220px; flex: none; border: 1px solid var(--border); border-radius: 8px; padding: 8px; display: flex; flex-direction: column; gap: 4px; overflow: auto; }
+.src-title { font-size: 11px; text-transform: uppercase; opacity: 0.6; margin-bottom: 2px; }
+.src-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.node-col { flex: 1; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.node-col .dialog-actions { font-size: 12px; }
+button.accent { background: var(--accent); color: #fff; border: 0; }
+button.mini { padding: 2px 8px; font-size: 12px; margin-left: 4px; }
+.truncated { padding: 4px 2px; font-size: 11px; opacity: 0.6; }
 .dialog-row { display: flex; align-items: center; gap: 10px; }
 .dialog-row label { font-size: 12px; opacity: 0.85; width: 70px; flex: none; }
 .sel { max-width: 260px; }
