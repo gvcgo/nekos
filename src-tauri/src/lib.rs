@@ -489,23 +489,13 @@ async fn core_start(state: State<'_, AppState>) -> Result<RunResult, String> {
 
     let ctl = state.ctl.clone();
     let runtime = state.runtime.clone();
-    let proxy_on = state.proxy_on.clone();
-    let want_proxy = settings.proxy_enabled;
-    let port = settings.port;
-
+    // System proxy is NOT auto-enabled on start: the user controls it
+    // independently via the toolbar switch (proxy_set).
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         let mut rt = runtime
             .lock()
             .map_err(|_| "runtime lock poisoned".to_string())?;
-        rt.start(&ctl, &session_json)?;
-        if want_proxy {
-            sysproxy::enable(port).map_err(|e| {
-                let _ = rt.stop();
-                e
-            })?;
-            *proxy_on.lock().unwrap() = true;
-        }
-        Ok(())
+        rt.start(&ctl, &session_json)
     })
     .await
     .map_err(|e| e.to_string())??;
@@ -514,6 +504,38 @@ async fn core_start(state: State<'_, AppState>) -> Result<RunResult, String> {
         status: core_status_raw(&state),
         selected_node: Some(selected),
     })
+}
+
+/// Toggle the system proxy independently of the core lifecycle.
+/// Enabling requires the core to be listening; disabling restores the
+/// system proxy immediately. The choice is persisted.
+#[tauri::command]
+async fn proxy_set(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<CoreStatusView, String> {
+    let db = state.db.clone();
+    let proxy_on = state.proxy_on.clone();
+    let running = state.runtime.lock().map(|rt| rt.is_running()).unwrap_or(false);
+    if enabled && !running {
+        return Err("内核未运行，无法开启系统代理（请先「启动」）".into());
+    }
+    let port = state.settings().port;
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        if enabled {
+            sysproxy::enable(port)?;
+        } else {
+            sysproxy::disable()?;
+        }
+        *proxy_on.lock().unwrap() = enabled;
+        let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+        let mut s = db.load_settings();
+        s.proxy_enabled = enabled;
+        db.save_settings(&s).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(core_status_raw(&state))
 }
 
 #[tauri::command]
@@ -691,6 +713,7 @@ pub fn run() {
             core_status,
             core_start,
             core_stop,
+            proxy_set,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

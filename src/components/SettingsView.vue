@@ -15,7 +15,6 @@ const err = ref("");
 
 const portStr = ref("2080");
 const mode = ref("global");
-const proxyEnabled = ref(true);
 const closeToTray = ref(true);
 
 onMounted(async () => {
@@ -23,7 +22,6 @@ onMounted(async () => {
     settings.value = await settingsGet();
     portStr.value = String(settings.value.port);
     mode.value = settings.value.mode;
-    proxyEnabled.value = settings.value.proxy_enabled;
     closeToTray.value = settings.value.close_to_tray;
     version.value = await coreVersion();
   } catch (e) {
@@ -44,7 +42,6 @@ async function save() {
     settings.value = await settingsSet({
       port,
       mode: mode.value,
-      proxy_enabled: proxyEnabled.value,
       close_to_tray: closeToTray.value,
     });
     savedMsg.value = "已保存（重启代理后生效）";
@@ -70,13 +67,10 @@ async function save() {
       </select>
 
       <label class="check">
-        <input v-model="proxyEnabled" type="checkbox" />
-        启动时启用系统代理
-      </label>
-      <label class="check">
         <input v-model="closeToTray" type="checkbox" />
         关闭窗口时最小化到托盘
       </label>
+      <p class="note">系统代理独立开关在「服务」页工具栏：内核运行中可随时开启/关闭，退出自动还原。</p>
 
       <div class="row">
         <button :disabled="saving" @click="save">{{ saving ? "保存中…" : "保存" }}</button>
@@ -113,6 +107,7 @@ button {
 button:disabled { opacity: 0.5; cursor: default; }
 .ok { color: #22c55e; font-size: 12px; }
 .err { color: #ef4444; font-size: 12px; }
+.note { font-size: 12px; opacity: 0.65; margin: 4px 0 0; line-height: 1.5; }
 .about { flex-direction: row; justify-content: space-between; align-items: center; }
 .mono { font-family: ui-monospace, monospace; font-size: 12px; }
 </style>

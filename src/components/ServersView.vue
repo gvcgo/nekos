@@ -11,6 +11,7 @@ import {
   importToGroup,
   measureNode,
   nodesList,
+  proxySet,
   renameGroup,
   setNodeCurrent,
   settingsGet,
@@ -184,7 +185,15 @@ async function testAll() {
 }
 
 async function toggleProxy(on: boolean) {
-  settings.value = await settingsSet({ proxy_enabled: on });
+  err.value = "";
+  switchMsg.value = "";
+  try {
+    status.value = await proxySet(on);
+    if (on) switchMsg.value = "系统代理已开启（关闭「停止」或再点开关即可还原）";
+  } catch (e) {
+    err.value = String(e);
+    await refreshStatus(); // revert checkbox to real state
+  }
 }
 
 async function changeMode(mode: string) {
@@ -226,8 +235,8 @@ onMounted(loadAll);
         <option value="rule">规则(绕过大陆)</option>
         <option value="direct">直连</option>
       </select>
-      <label class="proxy-toggle" title="启动 core 时启用系统代理">
-        <input type="checkbox" :checked="settings?.proxy_enabled ?? true" @change="toggleProxy(($event.target as HTMLInputElement).checked)" />
+      <label class="proxy-toggle" title="内核运行中可随时开关系统代理">
+        <input type="checkbox" :checked="status.proxy_enabled" :disabled="!status.running" @change="toggleProxy(($event.target as HTMLInputElement).checked)" />
         系统代理
       </label>
       <button :disabled="startBusy || !nodes.length" @click="toggleStart">

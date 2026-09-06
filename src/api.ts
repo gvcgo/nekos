@@ -165,6 +165,11 @@ export function coreStop(): Promise<CoreStatusView> {
   return invoke<CoreStatusView>("core_stop");
 }
 
+/** Toggle system proxy independently of the core lifecycle. */
+export function proxySet(enabled: boolean): Promise<CoreStatusView> {
+  return invoke<CoreStatusView>("proxy_set", { enabled });
+}
+
 export function coreStatus(): Promise<CoreStatusView> {
   return invoke<CoreStatusView>("core_status");
 }

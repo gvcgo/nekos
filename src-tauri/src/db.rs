@@ -54,7 +54,7 @@ impl Default for Settings {
             current_group_id: 1,
             port: 2080,
             mode: "global".into(),
-            proxy_enabled: true,
+            proxy_enabled: false, // system proxy is opt-in via the toolbar switch
             close_to_tray: true,
             selected_by_group: Default::default(),
         }
