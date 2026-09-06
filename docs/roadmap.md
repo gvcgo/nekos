@@ -8,12 +8,11 @@
 
 - [x] 架构与决策文档（docs/architecture.md）
 - [ ] Core: go module 引入 sing-box v1.14.0（库模式）
-- [ ] Core: parser——anytls/trojan 分享链接 → NodeSpec（含用户测试 URI 单测）
-- [ ] Core: parser 骨架覆盖 vmess/vless/ss/hysteria2/tuic（先行单一协议族冒烟后补全）
-- [ ] Core: builder——NodeSpec+session → sing-box option（socks/mixed 入站 + 选中节点出站 + 最小 DNS/路由）
-- [ ] Core: runtime——进程内 box.New/Start/Close；CLI `parse/config/run` 子命令
-- [ ] Core: JSON-RPC v0（parse.text/core.start/stop/status/url_test）+ SSE 事件
-- [ ] Core: 冒烟——经 SOCKS 走 anytls 节点真实出站连通（curl 验证）
+- [x] Core: parser——anytls/trojan/vless 分享链接 → sing-box outbound JSON（含用户测试 URI 单测；ws `ed` 保留在 path 的实测映射）
+- [ ] Core: parser 扩展 vmess/ss/ssr/hysteria2/tuic/wireguard/naive 等（复用 transport/registry 骨架）
+- [x] Core: builder——session → sing-box option（mixed/socks 入站 + 选中节点出站 + direct/block）
+- [x] Core: runtime——进程内 box.New/Start/Close（include.Context 引导）；CLI `parse/config/run/test/version`
+- [x] Core: 冒烟——4 节点（anytls×2/vless/trojan）经内嵌 sing-box 真实 HTTPS 204 全链路连通（337–1117ms，2026-09-06）
 - [ ] 编排层: 拉起/守护 core 子进程 + RPC client + 配置/DB 布局
 - [ ] 编排层: SQLite（groups/nodes/settings）schema + 迁移
 - [ ] 编排层: 分享链接/订阅导入命令（剪贴板/URL/文件）
