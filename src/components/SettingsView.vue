@@ -17,6 +17,7 @@ const portStr = ref("2080");
 const mode = ref("global");
 const logLevel = ref("warn");
 const closeToTray = ref(true);
+const filterIpv6 = ref(false);
 
 onMounted(async () => {
   try {
@@ -25,6 +26,7 @@ onMounted(async () => {
     mode.value = settings.value.mode;
     logLevel.value = settings.value.log_level ?? "warn";
     closeToTray.value = settings.value.close_to_tray;
+    filterIpv6.value = settings.value.filter_ipv6 ?? false;
     version.value = await coreVersion();
   } catch (e) {
     err.value = String(e);
@@ -46,8 +48,9 @@ async function save() {
       mode: mode.value,
       log_level: logLevel.value,
       close_to_tray: closeToTray.value,
+      filter_ipv6: filterIpv6.value,
     });
-    savedMsg.value = "已保存（重启代理后生效）";
+    savedMsg.value = "已保存";
   } catch (e) {
     err.value = String(e);
   } finally {
@@ -81,6 +84,10 @@ async function save() {
       <label class="check">
         <input v-model="closeToTray" type="checkbox" />
         关闭窗口时最小化到托盘
+      </label>
+      <label class="check" title="开启后，导入/更新订阅与粘贴导入时会丢弃 server 为 IPv6 地址的节点">
+        <input v-model="filterIpv6" type="checkbox" />
+        过滤 IPv6 节点（下次导入/更新生效）
       </label>
       <p class="note">系统代理独立开关在「服务」页工具栏：内核运行中可随时开启/关闭，退出自动还原。</p>
 

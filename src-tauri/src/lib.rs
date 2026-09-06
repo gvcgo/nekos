@@ -191,6 +191,23 @@ fn with_db<T>(
     f(&db)
 }
 
+/// True when a node's server field is an IPv6 literal (domains pass).
+fn is_ipv6_server(out: &serde_json::Value) -> bool {
+    out.get("server")
+        .and_then(|s| s.as_str())
+        .and_then(|h| h.parse::<std::net::IpAddr>().ok())
+        .map(|ip| ip.is_ipv6())
+        .unwrap_or(false)
+}
+
+/// Apply the "filter IPv6 nodes" preference to parsed nodes.
+fn filter_nodes(nodes: &[core::NodeMeta], filter_ipv6: bool) -> Vec<core::NodeMeta> {
+    if !filter_ipv6 {
+        return nodes.to_vec();
+    }
+    nodes.iter().filter(|n| !is_ipv6_server(&n.out)).cloned().collect()
+}
+
 fn shutdown_all(state: &AppState) {
     if let Ok(mut rt) = state.runtime.lock() {
         let _ = rt.stop();
@@ -245,8 +262,11 @@ async fn import_to_group(
     let parsed = tauri::async_runtime::spawn_blocking(move || ctl.parse(&text))
         .await
         .map_err(|e| e.to_string())??;
-    let new_nodes: Vec<NewNode> = parsed
-        .nodes
+    let kept = filter_nodes(&parsed.nodes, state.settings().filter_ipv6);
+    if kept.is_empty() && !parsed.nodes.is_empty() {
+        return Err("「过滤 IPv6 节点」已开启：本次内容没有可用节点，未导入".into());
+    }
+    let new_nodes: Vec<NewNode> = kept
         .iter()
         .map(|n| NewNode {
             id: n.id.clone(),
@@ -266,7 +286,7 @@ async fn import_to_group(
         .await
         .map_err(|e| e.to_string())??;
     }
-    Ok(parsed)
+    Ok(ImportResult { nodes: kept, errors: parsed.errors })
 }
 
 #[tauri::command]
@@ -354,6 +374,7 @@ struct SettingsPatch {
     close_to_tray: Option<bool>,
     log_level: Option<String>,
     sort_by_delay: Option<bool>,
+    filter_ipv6: Option<bool>,
 }
 
 #[tauri::command]
@@ -385,6 +406,9 @@ async fn settings_set(
         }
         if let Some(v) = patch.sort_by_delay {
             s.sort_by_delay = v;
+        }
+        if let Some(v) = patch.filter_ipv6 {
+            s.filter_ipv6 = v;
         }
         db.save_settings(&s).map_err(|e| e.to_string())?;
         Ok(s)
@@ -597,9 +621,13 @@ async fn subscription_refresh(
         ));
     }
 
+    let kept = filter_nodes(&parsed.nodes, state.settings().filter_ipv6);
+    if kept.is_empty() && !parsed.nodes.is_empty() {
+        return Err("「过滤 IPv6 节点」已开启：该订阅更新后没有可用节点，现有节点未改动".into());
+    }
+
     let db = state.db.clone();
-    let nodes: Vec<NewNode> = parsed
-        .nodes
+    let nodes: Vec<NewNode> = kept
         .iter()
         .map(|n| NewNode {
             id: n.id.clone(),
@@ -633,7 +661,7 @@ async fn subscription_refresh(
         content_type,
         userinfo,
         group_id: Some(group_id),
-        parsed,
+        parsed: ImportResult { nodes: kept, errors: parsed.errors },
     })
 }
 
@@ -778,11 +806,15 @@ async fn subscribe(
         ));
     }
 
+    let kept = filter_nodes(&parsed.nodes, state.settings().filter_ipv6);
+    if kept.is_empty() && !parsed.nodes.is_empty() && save_name.is_some() {
+        return Err("「过滤 IPv6 节点」已开启：该订阅没有可用节点，未创建订阅".into());
+    }
+
     let group_id = if let Some(name) = save_name {
         let db = state.db.clone();
         let (nodes, userinfo_json) = {
-            let nodes: Vec<NewNode> = parsed
-                .nodes
+            let nodes: Vec<NewNode> = kept
                 .iter()
                 .map(|n| NewNode {
                     id: n.id.clone(),
@@ -837,7 +869,7 @@ async fn subscribe(
         content_type,
         userinfo,
         group_id,
-        parsed,
+        parsed: ImportResult { nodes: kept, errors: parsed.errors },
     })
 }
 

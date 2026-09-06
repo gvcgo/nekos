@@ -51,6 +51,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_false() -> bool {
+    false
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Settings {
     pub current_group_id: i64,
@@ -62,6 +66,8 @@ pub struct Settings {
     pub log_level: String, // debug | info | warn | error
     #[serde(default = "default_true")]
     pub sort_by_delay: bool,
+    #[serde(default = "default_false")]
+    pub filter_ipv6: bool,
     pub selected_by_group: std::collections::HashMap<i64, String>,
 }
 
@@ -75,6 +81,7 @@ impl Default for Settings {
             close_to_tray: true,
             log_level: default_log_level(),
             sort_by_delay: true,
+            filter_ipv6: false,
             selected_by_group: Default::default(),
         }
     }
