@@ -341,12 +341,25 @@ impl Db {
     }
 
     /// Replace a group's node set with freshly fetched subscription nodes
-    /// (old latency results for the group are dropped too).
+    /// (old latency results for the group are dropped too). Runs in one
+    /// transaction so readers never observe an empty window.
     pub fn replace_group_nodes(&self, group_id: i64, nodes: &[NewNode]) -> rusqlite::Result<usize> {
-        self.conn.execute("DELETE FROM nodes WHERE group_id = ?1", params![group_id])?;
-        self.conn
-            .execute("DELETE FROM latency WHERE group_id = ?1", params![group_id])?;
-        self.upsert_nodes(group_id, nodes)
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM nodes WHERE group_id = ?1", params![group_id])?;
+        tx.execute("DELETE FROM latency WHERE group_id = ?1", params![group_id])?;
+        let mut inserted = 0;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT OR REPLACE INTO nodes (id, group_id, type, remark, out)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+            for n in nodes {
+                stmt.execute(params![n.id, group_id, n.r#type, n.remark, n.out])?;
+                inserted += 1;
+            }
+        }
+        tx.commit()?;
+        Ok(inserted)
     }
 
     pub fn upsert_latency(
