@@ -334,15 +334,6 @@ impl Db {
         Ok(all)
     }
 
-    /// Remove a strategy group from one host group.
-    pub fn remove_strategy_host(&self, strategy_id: i64, host_group: i64) -> rusqlite::Result<()> {
-        self.conn.execute(
-            "DELETE FROM strategy_hosts WHERE strategy_id = ?1 AND host_group = ?2",
-            params![strategy_id, host_group],
-        )?;
-        Ok(())
-    }
-
     pub fn rename_group(&self, id: i64, name: &str) -> rusqlite::Result<()> {
         self.conn.execute(
             "UPDATE groups SET name = ?2 WHERE id = ?1",
@@ -509,19 +500,6 @@ impl Db {
         }
         tx.commit()?;
         Ok(inserted)
-    }
-
-    /// Successful delay (ms) for a node in a group, if any.
-    pub fn latency_delay(&self, group_id: i64, node_id: &str) -> rusqlite::Result<Option<i64>> {
-        let delay: Option<Option<i64>> = self
-            .conn
-            .query_row(
-                "SELECT delay_ms FROM latency WHERE group_id = ?1 AND node_id = ?2",
-                params![group_id, node_id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        Ok(delay.flatten())
     }
 
     pub fn upsert_latency(
