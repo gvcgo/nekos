@@ -31,6 +31,7 @@ pub struct AppState {
     runtime: Arc<Mutex<RuntimeState>>,
     proxy_on: Arc<Mutex<bool>>,
     quitting: Arc<AtomicBool>,
+    updating: Arc<Mutex<std::collections::HashSet<i64>>>,
     data_dir: Arc<std::path::PathBuf>,
 }
 
@@ -45,6 +46,7 @@ impl AppState {
             runtime: Arc::new(Mutex::new(RuntimeState::default())),
             proxy_on: Arc::new(Mutex::new(false)),
             quitting: Arc::new(AtomicBool::new(false)),
+            updating: Arc::new(Mutex::new(std::collections::HashSet::new())),
             data_dir: Arc::new(dir),
         })
     }
@@ -396,6 +398,8 @@ struct SettingsPatch {
     log_level: Option<String>,
     sort_by_delay: Option<bool>,
     filter_ipv6: Option<bool>,
+    auto_update_subscriptions: Option<bool>,
+    auto_update_hours: Option<u32>,
 }
 
 #[tauri::command]
@@ -430,6 +434,12 @@ async fn settings_set(
         }
         if let Some(v) = patch.filter_ipv6 {
             s.filter_ipv6 = v;
+        }
+        if let Some(v) = patch.auto_update_subscriptions {
+            s.auto_update_subscriptions = v;
+        }
+        if let Some(v) = patch.auto_update_hours {
+            s.auto_update_hours = v.max(1);
         }
         db.save_settings(&s).map_err(|e| e.to_string())?;
         Ok(s)
@@ -673,19 +683,50 @@ async fn subscription_edit(
     .map_err(|e| e.to_string())?
 }
 
+/// RAII guard preventing concurrent refreshes of the same group.
+struct RefreshGuard {
+    updating: Arc<Mutex<std::collections::HashSet<i64>>>,
+    group_id: i64,
+}
+
+impl RefreshGuard {
+    fn acquire(
+        updating: &Arc<Mutex<std::collections::HashSet<i64>>>,
+        group_id: i64,
+    ) -> Result<RefreshGuard, String> {
+        let mut set = updating.lock().map_err(|_| "updating lock poisoned".to_string())?;
+        if !set.insert(group_id) {
+            return Err("该订阅正在更新中".into());
+        }
+        Ok(RefreshGuard { updating: updating.clone(), group_id })
+    }
+}
+
+impl Drop for RefreshGuard {
+    fn drop(&mut self) {
+        if let Ok(mut set) = self.updating.lock() {
+            set.remove(&self.group_id);
+        }
+    }
+}
+
 /// Re-fetch a subscription group using its saved URL + headers and replace
-/// the group's nodes.
-#[tauri::command]
-async fn subscription_refresh(
-    state: State<'_, AppState>,
+/// the group's nodes. Shared by the manual refresh command and the
+/// background auto-update loop.
+async fn refresh_subscription_group(
+    db: Arc<Mutex<Db>>,
+    ctl: CoreCtl,
+    updating: Arc<Mutex<std::collections::HashSet<i64>>>,
+    filter_v6: bool,
     group_id: i64,
 ) -> Result<subscribe::SubscribeOutcome, String> {
-    let db = state.db.clone();
-    let client = state.ctl.client().clone();
-    let ctl = state.ctl.clone();
+    let _guard = RefreshGuard::acquire(&updating, group_id)?;
+    let client = ctl.client().clone();
+    let db_read = db.clone();
+    let db_write = db.clone();
 
     let (url, headers) = tauri::async_runtime::spawn_blocking(move || -> Result<(String, HashMap<String, String>), String> {
-        let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+        let db = db_read.lock().map_err(|_| "db lock poisoned".to_string())?;
         let g = db
             .group(group_id)
             .map_err(|e| e.to_string())?
@@ -723,12 +764,11 @@ async fn subscription_refresh(
         ));
     }
 
-    let kept = filter_nodes(&parsed.nodes, state.settings().filter_ipv6);
+    let kept = filter_nodes(&parsed.nodes, filter_v6);
     if kept.is_empty() && !parsed.nodes.is_empty() {
         return Err("「过滤 IPv6 节点」已开启：该订阅更新后没有可用节点，现有节点未改动".into());
     }
 
-    let db = state.db.clone();
     let nodes: Vec<NewNode> = kept
         .iter()
         .map(|n| NewNode {
@@ -742,7 +782,7 @@ async fn subscription_refresh(
         .as_ref()
         .map(|u| serde_json::to_string(u).unwrap_or_default());
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
-        let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+        let db = db_write.lock().map_err(|_| "db lock poisoned".to_string())?;
         db.replace_group_nodes(group_id, &nodes)
             .map_err(|e| e.to_string())?;
         let current = db.group(group_id).map_err(|e| e.to_string())?;
@@ -767,12 +807,74 @@ async fn subscription_refresh(
     })
 }
 
-fn unix_now_secs() -> String {
+/// Manual refresh (UI button).
+#[tauri::command]
+async fn subscription_refresh(
+    state: State<'_, AppState>,
+    group_id: i64,
+) -> Result<subscribe::SubscribeOutcome, String> {
+    refresh_subscription_group(
+        state.db.clone(),
+        state.ctl.clone(),
+        state.updating.clone(),
+        state.settings().filter_ipv6,
+        group_id,
+    )
+    .await
+}
+
+fn unix_now() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs().to_string())
-        .unwrap_or_default()
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+fn unix_now_secs() -> String {
+    unix_now().to_string()
+}
+
+/// Background loop: every minute refresh subscriptions whose last successful
+/// update is older than the configured interval (when auto-update is on).
+async fn auto_update_loop(state: AppState) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        let settings = state.settings();
+        if !settings.auto_update_subscriptions {
+            continue;
+        }
+        let interval_secs = u64::from(settings.auto_update_hours.max(1)) * 3600;
+        let now = unix_now();
+        let due: Vec<i64> = {
+            let db = match state.db.lock() {
+                Ok(db) => db,
+                Err(_) => continue,
+            };
+            match db.list_groups() {
+                Ok(groups) => groups
+                    .into_iter()
+                    .filter(|g| g.sub_url.is_some())
+                    .filter(|g| {
+                        let last = u64::try_from(g.last_update_epoch.unwrap_or(0)).unwrap_or(0);
+                        now.saturating_sub(last) >= interval_secs
+                    })
+                    .map(|g| g.id)
+                    .collect(),
+                Err(_) => continue,
+            }
+        };
+        for group_id in due {
+            if let Err(e) = refresh_subscription_group(
+                state.db.clone(),
+                state.ctl.clone(),
+                state.updating.clone(),
+                settings.filter_ipv6,
+                group_id,
+            )
+            .await
+            {
+                eprintln!("auto subscription refresh #{group_id}: {e}");
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1022,7 +1124,10 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle();
             let state = AppState::open(handle)?;
+            let app_state = state.clone();
             app.manage(state);
+            // subscription auto-refresh scheduler (runs while the app lives)
+            tauri::async_runtime::spawn(auto_update_loop(app_state));
 
             let tray_icon = app
                 .default_window_icon()

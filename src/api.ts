@@ -138,6 +138,8 @@ export interface Settings {
   log_level?: string; // debug | info | warn | error (legacy rows omit it)
   sort_by_delay?: boolean;
   filter_ipv6?: boolean;
+  auto_update_subscriptions?: boolean;
+  auto_update_hours?: number;
   selected_by_group: Record<number, string>;
 }
 
@@ -150,6 +152,8 @@ export interface SettingsPatch {
   log_level?: string;
   sort_by_delay?: boolean;
   filter_ipv6?: boolean;
+  auto_update_subscriptions?: boolean;
+  auto_update_hours?: number;
 }
 
 export function settingsGet(): Promise<Settings> {

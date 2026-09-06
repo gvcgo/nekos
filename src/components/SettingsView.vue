@@ -18,6 +18,8 @@ const mode = ref("global");
 const logLevel = ref("warn");
 const closeToTray = ref(true);
 const filterIpv6 = ref(false);
+const autoUpdate = ref(false);
+const autoHours = ref(6);
 
 onMounted(async () => {
   try {
@@ -27,11 +29,33 @@ onMounted(async () => {
     logLevel.value = settings.value.log_level ?? "warn";
     closeToTray.value = settings.value.close_to_tray;
     filterIpv6.value = settings.value.filter_ipv6 ?? false;
+    autoUpdate.value = settings.value.auto_update_subscriptions ?? false;
+    autoHours.value = settings.value.auto_update_hours ?? 6;
     version.value = await coreVersion();
   } catch (e) {
     err.value = String(e);
   }
 });
+
+async function toggleAutoUpdate(on: boolean) {
+  try {
+    settings.value = await settingsSet({ auto_update_subscriptions: on });
+    autoUpdate.value = on;
+    savedMsg.value = on ? "自动更新已开启" : "自动更新已关闭";
+  } catch (e) {
+    err.value = String(e);
+  }
+}
+
+async function setAutoHours(hours: number) {
+  try {
+    settings.value = await settingsSet({ auto_update_hours: hours });
+    autoHours.value = hours;
+    savedMsg.value = `更新间隔设为 ${hours} 小时`;
+  } catch (e) {
+    err.value = String(e);
+  }
+}
 
 async function toggleFilter(on: boolean) {
   try {
@@ -99,6 +123,16 @@ async function save() {
         <input type="checkbox" :checked="filterIpv6" @change="toggleFilter(($event.target as HTMLInputElement).checked)" />
         过滤 IPv6 节点（立即保存，对之后导入/更新生效）
       </label>
+      <label class="check" title="应用运行期间每分钟检查；距上次成功更新超过间隔的订阅自动抓取更新">
+        <input type="checkbox" :checked="autoUpdate" @change="toggleAutoUpdate(($event.target as HTMLInputElement).checked)" />
+        自动更新订阅（应用运行期间）
+      </label>
+      <div v-if="autoUpdate" class="auto-row">
+        <label>更新间隔</label>
+        <select :value="autoHours" class="field sel-sm" @change="setAutoHours(Number(($event.target as HTMLSelectElement).value))">
+          <option v-for="h in [1, 3, 6, 12, 24]" :key="h" :value="h">{{ h }} 小时</option>
+        </select>
+      </div>
       <p class="note">系统代理独立开关在「服务」页工具栏：内核运行中可随时开启/关闭，退出自动还原。</p>
 
       <div class="row">
@@ -128,6 +162,9 @@ h1 { margin: 0; font-size: 20px; }
   background: transparent; color: inherit; font-size: 13px; max-width: 220px;
 }
 .check { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; margin-top: 2px; }
+.auto-row { display: flex; align-items: center; gap: 10px; margin: 4px 0; }
+.auto-row label { margin: 0; font-size: 12px; opacity: 0.85; width: 70px; }
+.sel-sm { max-width: 130px; }
 .row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
 button {
   border: 0; border-radius: 6px; background: var(--accent); color: #fff;

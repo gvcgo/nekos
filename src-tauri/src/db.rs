@@ -23,6 +23,9 @@ pub struct Group {
     pub sub_userinfo: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
+    /// unix seconds of the last successful fetch/refresh.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_update_epoch: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -55,6 +58,10 @@ fn default_false() -> bool {
     false
 }
 
+fn default_auto_hours() -> u32 {
+    6
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Settings {
     pub current_group_id: i64,
@@ -68,6 +75,10 @@ pub struct Settings {
     pub sort_by_delay: bool,
     #[serde(default = "default_false")]
     pub filter_ipv6: bool,
+    #[serde(default = "default_false")]
+    pub auto_update_subscriptions: bool,
+    #[serde(default = "default_auto_hours")]
+    pub auto_update_hours: u32,
     pub selected_by_group: std::collections::HashMap<i64, String>,
 }
 
@@ -82,6 +93,8 @@ impl Default for Settings {
             log_level: default_log_level(),
             sort_by_delay: true,
             filter_ipv6: false,
+            auto_update_subscriptions: false,
+            auto_update_hours: default_auto_hours(),
             selected_by_group: Default::default(),
         }
     }
@@ -146,6 +159,7 @@ impl Db {
         )?;
         self.ensure_column("groups", "user_agent", "TEXT")?;
         self.ensure_column("groups", "extra_headers", "TEXT")?;
+        self.ensure_column("groups", "last_update_epoch", "INTEGER")?;
         Ok(())
     }
 
@@ -166,7 +180,8 @@ impl Db {
 
     pub fn list_groups(&self) -> rusqlite::Result<Vec<Group>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, sub_url, user_agent, extra_headers, sub_userinfo, updated_at
+            "SELECT id, name, sub_url, user_agent, extra_headers, sub_userinfo, updated_at,
+                    last_update_epoch
              FROM groups ORDER BY id",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -178,6 +193,7 @@ impl Db {
                 extra_headers: row.get(4)?,
                 sub_userinfo: row.get(5)?,
                 updated_at: row.get(6)?,
+                last_update_epoch: row.get(7)?,
             })
         })?;
         rows.collect()
@@ -218,7 +234,8 @@ impl Db {
     pub fn group(&self, id: i64) -> rusqlite::Result<Option<Group>> {
         self.conn
             .query_row(
-                "SELECT id, name, sub_url, user_agent, extra_headers, sub_userinfo, updated_at
+                "SELECT id, name, sub_url, user_agent, extra_headers, sub_userinfo, updated_at,
+                        last_update_epoch
                  FROM groups WHERE id = ?1",
                 params![id],
                 |row| {
@@ -230,6 +247,7 @@ impl Db {
                         extra_headers: row.get(4)?,
                         sub_userinfo: row.get(5)?,
                         updated_at: row.get(6)?,
+                        last_update_epoch: row.get(7)?,
                     })
                 },
             )
@@ -248,7 +266,9 @@ impl Db {
     ) -> rusqlite::Result<()> {
         self.conn.execute(
             "UPDATE groups SET sub_url = ?2, user_agent = ?3, extra_headers = ?4,
-             sub_userinfo = ?5, updated_at = strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime')
+             sub_userinfo = ?5,
+             updated_at = strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime'),
+             last_update_epoch = CAST(strftime('%s', 'now') AS INTEGER)
              WHERE id = ?1",
             params![id, sub_url, user_agent, extra_headers, userinfo],
         )?;
