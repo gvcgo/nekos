@@ -79,30 +79,35 @@
 
 其它：`settings(k,v)`；`log(id, ts, level, module, msg)`；`rulesets(id, url, format, local_path, updated_at)`（P2 引入）。
 
-## 5. NodeSpec —— 与 sing-box 版本解耦的中间格式
+## 5. NodeSpec —— 与 sing-box 同构的节点中间格式
 
-core 的 parser 输出、以及 Rust 持久化的都是 NodeSpec：一个**只含协议公共子集**的 JSON，形如：
+**决策（2026-09-06 修订）**：NodeSpec 不是"手维护的中立子集"，而是**一条 sing-box outbound option 的完整 JSON**（`{"type": "...", …全部字段}`），加两个编排层字段：
 
 ```json
 {
-  "type": "anytls",
-  "tag": "A新加坡1",
-  "server": "ew.ali66mysql.com",
-  "server_port": 26019,
-  "password": "e0c664d9-...",
-  "tls": { "enabled": true, "server_name": "www.apple.com", "insecure": true },
-  "transport": null,
-  "extra": { }
+  "id": "6461aa467fb1dda0",      // 内容哈希，去重用
+  "remark": "🇸🇬 A新加坡1",       // 展示名（来自链接 fragment）
+  "out": {
+    "type": "anytls",
+    "server": "ew.ali66mysql.com",
+    "server_port": 26019,
+    "password": "e0c664d9-…",
+    "tls": { "enabled": true, "server_name": "www.apple.com", "insecure": true }
+  }
 }
 ```
 
-规则：
-- `type` 与 sing-box outbound type 同名（`anytls`/`trojan`/`vmess`/`vless`/`shadowsocks`/`hysteria2`/`tuic`/`wireguard`/…）。
-- 字段取「UI 需要编辑/展示」的最小集；私有字段进 `extra` 透传。core builder 拿到 NodeSpec 后映射到 `option.Outbound` 并补默认值。
-- 分享链接/订阅文本只进 core（parser），Rust 侧只认 NodeSpec —— 单向翻译，避免两处都实现协议逻辑。
+理由：schema 就是 sing-box 官方 `option` 类型本身（core 解析时由
+`UnmarshalExtendedContext` 校验），新协议/新字段随 sing-box 发版**零漂移**；
+builder 无需维护映射表。tag 由编排层按 entry.id 派生（`out-<id>`），组内唯一。
 
-### 解析范围（parser，按 P0→P4 扩充）
-anytls://、trojan://、vmess://、vless://、ss://、ssr://、hysteria2://、hy2://、tuic://、vless-reality（vless:// 参数子集）、wireguard://、naive、socks/http 明文、`happ://`/`nekobox://`/`v2raytun://` 深链、订阅文本中的 sing-box/v2rayN JSON 数组与 base64 混排。
+- 分享链接/订阅文本只进 core（parser）；Rust 侧只认该 JSON。
+- parser 范围（anytls/trojan/vless 已落地 + 单测，2026-09-06）：
+  anytls://、trojan://、vless://；P1 补 vmess/ss/ssr/hysteria2/tuic/wireguard 等；
+  订阅文本支持 base64 整体解码、逐行、url= 包裹。
+- **ws early-data 实测结论**：v2rayN 风格 `path=/?ed=2048` 必须**原样保留在 path**（URL 查询式 ed），
+  实测 sing-box 的 `max_early_data` header 式会被 v2rayN 系服务端拒绝（EOF）；见
+  core/internal/link/transport.go 注释。
 
 ## 6. 控制面协议（编排层 ↔ core）
 

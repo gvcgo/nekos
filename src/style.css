@@ -1,0 +1,34 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f5f6f8;
+  --bg-dark: #16181d;
+  --fg: #1f2329;
+  --fg-dark: #e8eaed;
+  --accent: #3b82f6;
+  --border: #e2e5ea;
+  --border-dark: #2a2e37;
+  font-family: system-ui, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+}
+
+@media (prefers-color-scheme: dark) {
+  body {
+    background: var(--bg-dark);
+    color: var(--fg-dark);
+  }
+}
