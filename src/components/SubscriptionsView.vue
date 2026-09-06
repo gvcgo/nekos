@@ -249,6 +249,42 @@ async function doMultiCopy() {
   }
 }
 
+function fmtRelTime(epoch?: number): string {
+  if (!epoch) return "—";
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - epoch));
+  if (s < 60) return `${s}秒前`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}分钟前`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}小时前`;
+  return `${Math.floor(h / 24)}天前`;
+}
+
+function fmtCountdown(nextMs: number): string {
+  const min = Math.max(1, Math.ceil((nextMs - Date.now()) / 60000));
+  return min < 60 ? `${min}分钟` : `${Math.round(min / 60)}小时`;
+}
+
+function quotaTooltip(g: Group): string | undefined {
+  const u = userInfo(g);
+  if (!u) return undefined;
+  const lines = [
+    `已用: ${fmtBytes(u.upload)}↑ / ${fmtBytes(u.download)}↓`,
+    `总量: ${fmtBytes(u.total)}`,
+  ];
+  if (u.expire) lines.push(`到期: ${new Date(u.expire * 1000).toLocaleString()}`);
+  return lines.join("\n");
+}
+
+function updatedTooltip(g: Group): string | undefined {
+  const parts: string[] = [g.updated_at ? `上次更新: ${g.updated_at}` : "从未更新过"];
+  const a = autoInfo(g);
+  if (a) {
+    parts.push(a.due ? "已到期，后台将自动更新" : `下次自动更新: ${new Date(a.next).toLocaleString()}`);
+  }
+  return parts.join("\n");
+}
+
 function userInfo(g: Group): SubUserInfo | null {
   if (!g.sub_userinfo) return null;
   try {
@@ -444,37 +480,34 @@ async function doSaveNew() {
     <section v-if="subscriptions.length" class="list">
       <table>
         <thead>
-          <tr><th>名称</th><th>地址</th><th>流量/到期</th><th>更新于</th><th></th></tr>
+          <tr><th class="c-name">名称</th><th class="c-url">地址</th><th class="c-meta">流量</th><th class="c-meta">更新</th><th class="c-ops"></th></tr>
         </thead>
         <tbody>
           <template v-for="g in subscriptions" :key="g.id">
             <tr>
-              <td>{{ g.name }}</td>
-              <td class="mono url" :title="g.sub_url">{{ g.sub_url }}</td>
-              <td class="mono">
+              <td class="c-name ell" :title="g.name">{{ g.name }}</td>
+              <td class="c-url ell mono" :title="g.sub_url">{{ g.sub_url }}</td>
+              <td class="c-meta ell mono" :title="quotaTooltip(g)">
                 <template v-if="userInfo(g)">
-                  {{ fmtBytes((userInfo(g)!.upload || 0) + (userInfo(g)!.download || 0)) }} /
-                  {{ fmtBytes(userInfo(g)!.total || 0)
-                  }}<span v-if="userInfo(g)!.expire"> · {{ new Date(userInfo(g)!.expire! * 1000).toLocaleDateString() }}</span>
+                  {{ fmtBytes((userInfo(g)!.upload || 0) + (userInfo(g)!.download || 0)) }}/{{ fmtBytes(userInfo(g)!.total || 0) }}
                 </template>
                 <span v-else class="dim">—</span>
               </td>
-              <td class="mono">
-                <div>{{ g.updated_at ?? "—" }}</div>
-                <template v-if="autoInfo(g)">
-                  <div v-if="autoInfo(g)!.due" class="auto-due">已到期，后台将自动更新</div>
-                  <div v-else class="auto-next">下次 {{ new Date(autoInfo(g)!.next).toLocaleTimeString() }}</div>
-                </template>
-                <div v-else-if="!g.updated_at" class="dim">从未更新过</div>
+              <td class="c-meta ell" :title="updatedTooltip(g)">
+                <span :class="{ 'auto-due': autoInfo(g)?.due }">
+                  {{ fmtRelTime(g.last_update_epoch) }}
+                  <span v-if="autoInfo(g) && !autoInfo(g)!.due" class="dim">({{ fmtCountdown(autoInfo(g)!.next) }})</span>
+                  <span v-else-if="autoInfo(g)?.due">已到期</span>
+                </span>
               </td>
               <td class="ops">
-                <button class="ghost mini" @click="startEdit(g)">编辑</button>
-                <button class="ghost mini" @click="openCopy(g)">加入分组…</button>
-                <button class="ghost mini" :disabled="refreshing[g.id]" @click="refreshSub(g)">
-                  {{ refreshing[g.id] ? "更新中…" : "更新" }}
+                <button class="ghost mini icon-btn" title="编辑 URL/Header" @click="startEdit(g)">✎</button>
+                <button class="ghost mini icon-btn" title="将本订阅节点加入分组" @click="openCopy(g)">＋</button>
+                <button class="mini" :disabled="refreshing[g.id]" :title="refreshing[g.id] ? '更新中…' : '立即抓取更新'" @click="refreshSub(g)">
+                  {{ refreshing[g.id] ? "…" : "更新" }}
                 </button>
-                <button class="ghost mini" @click="emit('saved', g.id)">节点</button>
-                <button class="ghost mini danger" @click="delSub(g)">删除</button>
+                <button class="ghost mini icon-btn" title="查看节点" @click="emit('saved', g.id)">▸</button>
+                <button class="ghost mini icon-btn danger" title="删除订阅" @click="delSub(g)">✕</button>
               </td>
             </tr>
 
@@ -629,8 +662,16 @@ th { font-size: 11px; text-transform: uppercase; opacity: 0.7; }
 .url { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mono { font-family: ui-monospace, monospace; font-size: 11px; }
 .dim { opacity: 0.5; }
-.auto-next { opacity: 0.6; font-size: 10px; margin-top: 2px; }
-.auto-due { color: #f59e0b; font-size: 10px; margin-top: 2px; }
+.auto-due { color: #f59e0b; }
+.ell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.list table { table-layout: fixed; }
+th.c-name { width: 20%; }
+th.c-url { width: 36%; }
+th.c-meta { width: 12%; }
+th.c-ops { width: 20%; }
+.c-ops button { margin-left: 4px; }
+.icon-btn { font-size: 12px; line-height: 1; padding: 2px 5px; }
+tr:hover td { background: rgba(59, 130, 246, 0.04); }
 .ops { white-space: nowrap; text-align: right; }
 button {
   border: 0; border-radius: 6px; background: var(--accent); color: #fff;
