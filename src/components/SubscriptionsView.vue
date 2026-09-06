@@ -15,6 +15,253 @@ import {
   type SubUserInfo,
   type SubscribeResult,
 } from "../api";
+import { useDict, fmt, type Dict } from "../i18n";
+
+const zhL = {
+  title: "订阅",
+  subCount: "{n} 个订阅组",
+  autoOn: "自动更新开（{minutes} 分钟）",
+  updating: "更新中…",
+  refreshAll: "全部更新",
+  multiPick: "多订阅选节点入组…",
+  allUpdated: "全部订阅更新完成",
+  name: "名称",
+  colUrl: "地址",
+  colTraffic: "流量",
+  update: "更新",
+  editTip: "编辑 URL/Header",
+  copyTip: "将本订阅节点加入分组",
+  refreshNow: "立即抓取更新",
+  viewNodes: "查看节点",
+  deleteSub: "删除订阅",
+  dueShort: "已到期",
+  dash: "—",
+  secAgo: "{n}秒前",
+  minAgo: "{n}分钟前",
+  hourAgo: "{n}小时前",
+  dayAgo: "{n}天前",
+  countMin: "{n}分钟",
+  countHour: "{n}小时",
+  quotaUsed: "已用: {up}↑ / {down}↓",
+  quotaTotal: "总量: {total}",
+  quotaExpire: "到期: {date}",
+  lastUpdatedAt: "上次更新: {at}",
+  neverUpdated: "从未更新过",
+  dueAuto: "已到期，后台将自动更新",
+  nextAutoAt: "下次自动更新: {date}",
+  delConfirm: "删除订阅「{name}」及其自带分组节点？\n已加入其它分组的节点副本会保留。",
+  editSaved: "已保存订阅配置（点「更新」按新配置重新抓取）",
+  subUrl: "订阅地址",
+  userAgent: "User-Agent",
+  extraHeaders: "额外请求头",
+  editUrlPh: "https://example.com/sub 或 ...?clash=2",
+  uaPh: "如 clash-verge/v2.5.2（留空则不发送）",
+  extrasPh: "Referer: https://example.com\nAuthorization: Bearer xxx",
+  saving: "保存中…",
+  saveChanges: "保存修改",
+  cancel: "取消",
+  emptyState: "还没有订阅组 — 在下方「抓取新订阅」创建。",
+  copyTitle: "将「{name}」的节点加入分组",
+  targetGroup: "目标分组",
+  selectAll: "全选",
+  joining: "加入中…",
+  joinCount: "加入 {n} 个节点",
+  copyNeedTarget: "请先创建目标分组（分组页「＋新建」）",
+  noNodePicked: "没有勾选任何节点",
+  joinedMsg: "已将 {n} 个节点加入分组「{name}」",
+  dupSkipComma: "，{m} 个已存在跳过",
+  multiTitle: "从多个订阅选择节点导入分组",
+  srcTitle: "订阅源",
+  searchPh: "搜索备注 / 类型（如 HKG、trojan）",
+  selCount: "已选 {n} / {m}",
+  selectFiltered: "全选(当前筛选)",
+  clearSel: "清空筛选",
+  showTrunc: "仅展示前 600 条（共 {n}），搜索可缩小范围",
+  noMatch: "没有匹配节点",
+  importToGroup: "导入到分组",
+  importing: "导入中…",
+  importCount: "导入 {n} 个节点",
+  multiNeedTarget: "没有目标分组（先在服务页新建）",
+  multiImported: "已合并导入 {n} 个节点到「{name}」",
+  dupSkipParen: "（{m} 个已存在跳过）",
+  fetchNew: "＋ 抓取新订阅",
+  subUrlPh: "https://example.com/xxxx/sub 或 ...?clash=2",
+  fetching: "抓取中…",
+  fetchParse: "抓取解析",
+  uaExamplePh: "如 clash-verge/v2.5.2",
+  headersPh: "Referer: https://example.com\n每行 Key: Value",
+  parseSummary: "解析 {n} 节点 · 错误 {m}",
+  newGroupNamePh: "保存为订阅组名称",
+  saveNewGroup: "保存为新订阅组",
+  subCreated: "已创建订阅「{name}」（{n} 节点）",
+  subRefreshed: "「{name}」已更新：{n} 节点，{m} 错误",
+  newSubDefault: "新订阅",
+} as const;
+type DictKeys = keyof typeof zhL;
+const enL: Record<DictKeys, string> = {
+  title: "Subscriptions",
+  subCount: "{n} subscription groups",
+  autoOn: "Auto-update on ({minutes} min)",
+  updating: "Updating…",
+  refreshAll: "Refresh all",
+  multiPick: "Pick nodes from multiple subscriptions…",
+  allUpdated: "All subscriptions updated",
+  name: "Name",
+  colUrl: "URL",
+  colTraffic: "Traffic",
+  update: "Update",
+  editTip: "Edit URL/Header",
+  copyTip: "Add this subscription's nodes to a group",
+  refreshNow: "Fetch update now",
+  viewNodes: "View nodes",
+  deleteSub: "Delete subscription",
+  dueShort: "Due",
+  dash: "—",
+  secAgo: "{n}s ago",
+  minAgo: "{n}m ago",
+  hourAgo: "{n}h ago",
+  dayAgo: "{n}d ago",
+  countMin: "{n} min",
+  countHour: "{n} hr",
+  quotaUsed: "Used: {up}↑ / {down}↓",
+  quotaTotal: "Total: {total}",
+  quotaExpire: "Expires: {date}",
+  lastUpdatedAt: "Last updated: {at}",
+  neverUpdated: "Never updated",
+  dueAuto: "Due — will auto-update in the background",
+  nextAutoAt: "Next auto-update: {date}",
+  delConfirm: "Delete subscription “{name}” and its own group nodes?\nCopies added to other groups will be kept.",
+  editSaved: "Subscription config saved — click “Update” to re-fetch with the new config",
+  subUrl: "Subscription URL",
+  userAgent: "User-Agent",
+  extraHeaders: "Extra headers",
+  editUrlPh: "https://example.com/sub or ...?clash=2",
+  uaPh: "e.g. clash-verge/v2.5.2 (leave blank to not send)",
+  extrasPh: "Referer: https://example.com\nAuthorization: Bearer xxx",
+  saving: "Saving…",
+  saveChanges: "Save changes",
+  cancel: "Cancel",
+  emptyState: "No subscription groups yet — create one with “Fetch new subscription” below.",
+  copyTitle: "Add nodes of “{name}” to a group",
+  targetGroup: "Target group",
+  selectAll: "Select all",
+  joining: "Adding…",
+  joinCount: "Add {n} nodes",
+  copyNeedTarget: "Create a target group first (Servers page “+ New”)",
+  noNodePicked: "No nodes selected",
+  joinedMsg: "Added {n} nodes to group “{name}”",
+  dupSkipComma: " ({m} already exist — skipped)",
+  multiTitle: "Pick nodes from multiple subscriptions and import them into a group",
+  srcTitle: "Sources",
+  searchPh: "Search remark / type (e.g. HKG, trojan)",
+  selCount: "Selected {n} / {m}",
+  selectFiltered: "Select all (filtered)",
+  clearSel: "Clear selection",
+  showTrunc: "Only the first 600 are shown (of {n}) — search to narrow the range",
+  noMatch: "No matching nodes",
+  importToGroup: "Import to group",
+  importing: "Importing…",
+  importCount: "Import {n} nodes",
+  multiNeedTarget: "No target group (create one on the Servers page first)",
+  multiImported: "Merged-imported {n} nodes into “{name}”",
+  dupSkipParen: " ({m} already exist — skipped)",
+  fetchNew: "＋ Fetch new subscription",
+  subUrlPh: "https://example.com/xxxx/sub or ...?clash=2",
+  fetching: "Fetching…",
+  fetchParse: "Fetch & parse",
+  uaExamplePh: "e.g. clash-verge/v2.5.2",
+  headersPh: "Referer: https://example.com\nOne “Key: Value” pair per line",
+  parseSummary: "Parsed {n} nodes · {m} errors",
+  newGroupNamePh: "Name for the new subscription group",
+  saveNewGroup: "Save as new subscription group",
+  subCreated: "Created subscription “{name}” ({n} nodes)",
+  subRefreshed: "“{name}” updated: {n} nodes, {m} errors",
+  newSubDefault: "New subscription",
+};
+const arL: Record<DictKeys, string> = {
+  title: "الاشتراكات",
+  subCount: "عدد مجموعات الاشتراك: {n}",
+  autoOn: "التحديث التلقائي مفعّل (كل {minutes} دقيقة)",
+  updating: "جارٍ التحديث…",
+  refreshAll: "تحديث الكل",
+  multiPick: "اختيار عقد من عدة اشتراكات…",
+  allUpdated: "تم تحديث جميع الاشتراكات",
+  name: "الاسم",
+  colUrl: "الرابط",
+  colTraffic: "البيانات",
+  update: "التحديث",
+  editTip: "تعديل الرابط/الترويسات",
+  copyTip: "إضافة عقد هذا الاشتراك إلى مجموعة",
+  refreshNow: "جلب التحديث الآن",
+  viewNodes: "عرض العقد",
+  deleteSub: "حذف الاشتراك",
+  dueShort: "مستحق",
+  dash: "—",
+  secAgo: "منذ {n} ثانية",
+  minAgo: "منذ {n} دقيقة",
+  hourAgo: "منذ {n} ساعة",
+  dayAgo: "منذ {n} يوم",
+  countMin: "{n} دقيقة",
+  countHour: "{n} ساعة",
+  quotaUsed: "المستخدم: {up}↑ / {down}↓",
+  quotaTotal: "الإجمالي: {total}",
+  quotaExpire: "تاريخ الانتهاء: {date}",
+  lastUpdatedAt: "آخر تحديث: {at}",
+  neverUpdated: "لم يُحدَّث مطلقًا",
+  dueAuto: "مستحق الآن — سيتم التحديث تلقائيًا في الخلفية",
+  nextAutoAt: "التحديث التلقائي القادم: {date}",
+  delConfirm: "حذف الاشتراك «{name}» وعقد مجموعته الخاصة؟\nستبقى النسخ المضافة إلى مجموعات أخرى.",
+  editSaved: "تم حفظ إعدادات الاشتراك — اضغط «تحديث» لإعادة الجلب بالإعدادات الجديدة",
+  subUrl: "رابط الاشتراك",
+  userAgent: "User-Agent",
+  extraHeaders: "ترويسات إضافية",
+  editUrlPh: "https://example.com/sub أو ...?clash=2",
+  uaPh: "مثال: clash-verge/v2.5.2 (اتركه فارغًا حتى لا يُرسَل)",
+  extrasPh: "Referer: https://example.com\nAuthorization: Bearer xxx",
+  saving: "جارٍ الحفظ…",
+  saveChanges: "حفظ التغييرات",
+  cancel: "إلغاء",
+  emptyState: "لا توجد مجموعات اشتراك بعد — أنشئ واحدة عبر «جلب اشتراك جديد» أدناه.",
+  copyTitle: "إضافة عقد «{name}» إلى مجموعة",
+  targetGroup: "المجموعة الهدف",
+  selectAll: "تحديد الكل",
+  joining: "جارٍ الإضافة…",
+  joinCount: "إضافة {n} من العقد",
+  copyNeedTarget: "أنشئ مجموعة هدف أولًا (صفحة الخوادم «+ جديد»)",
+  noNodePicked: "لم يتم تحديد أي عقد",
+  joinedMsg: "تمت إضافة {n} من العقد إلى المجموعة «{name}»",
+  dupSkipComma: " ({m} موجودة مسبقًا — تم تخطيها)",
+  multiTitle: "اختر عقدًا من عدة اشتراكات لاستيرادها إلى مجموعة",
+  srcTitle: "مصادر الاشتراك",
+  searchPh: "ابحث في الاسم أو النوع (مثل HKG أو trojan)",
+  selCount: "المحدد {n} / {m}",
+  selectFiltered: "تحديد الكل (حسب الفلتر)",
+  clearSel: "مسح التحديد",
+  showTrunc: "يُعرض أول 600 فقط (من أصل {n}) — ابحث لتضييق النطاق",
+  noMatch: "لا توجد عقد مطابقة",
+  importToGroup: "الاستيراد إلى مجموعة",
+  importing: "جارٍ الاستيراد…",
+  importCount: "استيراد {n} من العقد",
+  multiNeedTarget: "لا توجد مجموعة هدف (أنشئ واحدة في صفحة الخوادم أولًا)",
+  multiImported: "تم دمج {n} من العقد في «{name}»",
+  dupSkipParen: " ({m} موجودة مسبقًا — تم تخطيها)",
+  fetchNew: "جلب اشتراك جديد ＋",
+  subUrlPh: "https://example.com/xxxx/sub أو ...?clash=2",
+  fetching: "جارٍ الجلب…",
+  fetchParse: "جلب وتحليل",
+  uaExamplePh: "مثال: clash-verge/v2.5.2",
+  headersPh: "Referer: https://example.com\nكل سطر «Key: Value»",
+  parseSummary: "تم تحليل {n} عقدًا · {m} خطأ",
+  newGroupNamePh: "اسم مجموعة الاشتراك الجديدة",
+  saveNewGroup: "حفظ كمجموعة اشتراك جديدة",
+  subCreated: "تم إنشاء الاشتراك «{name}» ({n} عقد)",
+  subRefreshed: "تم تحديث «{name}»: {n} عقد، {m} أخطاء",
+  newSubDefault: "اشتراك جديد",
+};
+const dict = useDict({ zh: zhL as Dict, en: enL, ar: arL });
+function tt(k: DictKeys, p?: Record<string, string | number>): string {
+  return fmt(dict.value[k] as string, p);
+}
 
 const emit = defineEmits<{ (e: "saved", groupId: number): void }>();
 
@@ -70,7 +317,7 @@ async function refreshAll() {
         // refreshSub shows its own errors; keep going for the rest
       }
     }
-    msg.value = "全部订阅更新完成";
+    msg.value = tt("allUpdated");
   } finally {
     refreshingAll.value = false;
   }
@@ -114,12 +361,12 @@ function toggleCopyAll(on: boolean) {
 
 async function doCopyToGroup() {
   if (!copyOf.value || copyTarget.value == null) {
-    err.value = "请先创建目标分组（分组页「＋新建」）";
+    err.value = tt("copyNeedTarget");
     return;
   }
   const ids = copyNodesList.value.filter((n) => copySel.value[n.id]).map((n) => n.id);
   if (!ids.length) {
-    err.value = "没有勾选任何节点";
+    err.value = tt("noNodePicked");
     return;
   }
   copyBusy.value = true;
@@ -127,7 +374,7 @@ async function doCopyToGroup() {
   try {
     const out = await copyNodes(copyOf.value.id, copyTarget.value, ids);
     const targetName = allGroups.value.find((g) => g.id === copyTarget.value)?.name ?? "";
-    msg.value = `已将 ${out.inserted} 个节点加入分组「${targetName}」${out.duplicated ? `，${out.duplicated} 个已存在跳过` : ""}`;
+    msg.value = tt("joinedMsg", { n: out.inserted, name: targetName }) + (out.duplicated ? tt("dupSkipComma", { m: out.duplicated }) : "");
     closeCopy();
   } catch (e) {
     err.value = String(e);
@@ -221,7 +468,7 @@ function toggleAllVisible(on: boolean) {
 
 async function doMultiCopy() {
   if (multiTarget.value == null) {
-    err.value = "没有目标分组（先在服务页新建）";
+    err.value = tt("multiNeedTarget");
     return;
   }
   const target = multiTarget.value;
@@ -240,7 +487,7 @@ async function doMultiCopy() {
       dup += out.duplicated;
     }
     const targetName = allGroups.value.find((g) => g.id === target)?.name ?? "";
-    msg.value = `已合并导入 ${added} 个节点到「${targetName}」${dup ? `（${dup} 个已存在跳过）` : ""}`;
+    msg.value = tt("multiImported", { n: added, name: targetName }) + (dup ? tt("dupSkipParen", { m: dup }) : "");
     closeMulti();
   } catch (e) {
     err.value = String(e);
@@ -250,37 +497,37 @@ async function doMultiCopy() {
 }
 
 function fmtRelTime(epoch?: number): string {
-  if (!epoch) return "—";
+  if (!epoch) return tt("dash");
   const s = Math.max(0, Math.floor(Date.now() / 1000 - epoch));
-  if (s < 60) return `${s}秒前`;
+  if (s < 60) return tt("secAgo", { n: s });
   const m = Math.floor(s / 60);
-  if (m < 60) return `${m}分钟前`;
+  if (m < 60) return tt("minAgo", { n: m });
   const h = Math.floor(m / 60);
-  if (h < 24) return `${h}小时前`;
-  return `${Math.floor(h / 24)}天前`;
+  if (h < 24) return tt("hourAgo", { n: h });
+  return tt("dayAgo", { n: Math.floor(h / 24) });
 }
 
 function fmtCountdown(nextMs: number): string {
   const min = Math.max(1, Math.ceil((nextMs - Date.now()) / 60000));
-  return min < 60 ? `${min}分钟` : `${Math.round(min / 60)}小时`;
+  return min < 60 ? tt("countMin", { n: min }) : tt("countHour", { n: Math.round(min / 60) });
 }
 
 function quotaTooltip(g: Group): string | undefined {
   const u = userInfo(g);
   if (!u) return undefined;
   const lines = [
-    `已用: ${fmtBytes(u.upload)}↑ / ${fmtBytes(u.download)}↓`,
-    `总量: ${fmtBytes(u.total)}`,
+    tt("quotaUsed", { up: fmtBytes(u.upload), down: fmtBytes(u.download) }),
+    tt("quotaTotal", { total: fmtBytes(u.total) }),
   ];
-  if (u.expire) lines.push(`到期: ${new Date(u.expire * 1000).toLocaleString()}`);
+  if (u.expire) lines.push(tt("quotaExpire", { date: new Date(u.expire * 1000).toLocaleString() }));
   return lines.join("\n");
 }
 
 function updatedTooltip(g: Group): string | undefined {
-  const parts: string[] = [g.updated_at ? `上次更新: ${g.updated_at}` : "从未更新过"];
+  const parts: string[] = [g.updated_at ? tt("lastUpdatedAt", { at: g.updated_at }) : tt("neverUpdated")];
   const a = autoInfo(g);
   if (a) {
-    parts.push(a.due ? "已到期，后台将自动更新" : `下次自动更新: ${new Date(a.next).toLocaleString()}`);
+    parts.push(a.due ? tt("dueAuto") : tt("nextAutoAt", { date: new Date(a.next).toLocaleString() }));
   }
   return parts.join("\n");
 }
@@ -306,7 +553,7 @@ function fmtBytes(n: number): string {
 }
 
 async function delSub(g: Group) {
-  if (!confirm(`删除订阅「${g.name}」及其自带分组节点？\n已加入其它分组的节点副本会保留。`)) return;
+  if (!confirm(tt("delConfirm", { name: g.name }))) return;
   err.value = "";
   try {
     await deleteGroup(g.id);
@@ -322,7 +569,7 @@ async function refreshSub(g: Group) {
   msg.value = "";
   try {
     const out: SubscribeResult = await subscriptionRefresh(g.id);
-    msg.value = `「${g.name}」已更新：${out.nodes.length} 节点，${out.errors.length} 错误`;
+    msg.value = tt("subRefreshed", { name: g.name, n: out.nodes.length, m: out.errors.length });
     await loadSubs();
   } catch (e) {
     err.value = String(e);
@@ -389,7 +636,7 @@ async function saveEdit() {
       editUA.value,
       extrasToJson(editExtrasText.value),
     );
-    msg.value = "已保存订阅配置（点「更新」按新配置重新抓取）";
+    msg.value = tt("editSaved");
     await loadSubs();
   } catch (e) {
     err.value = String(e);
@@ -419,7 +666,7 @@ function suggestName(subUrl: string): string {
   try {
     return new URL(subUrl).hostname;
   } catch {
-    return "新订阅";
+    return tt("newSubDefault");
   }
 }
 
@@ -447,7 +694,7 @@ async function doSaveNew() {
       saveName.value.trim(),
     );
     if (out.group_id) {
-      msg.value = `已创建订阅「${saveName.value.trim()}」（${out.nodes.length} 节点）`;
+      msg.value = tt("subCreated", { name: saveName.value.trim(), n: out.nodes.length });
       preview.value = null;
       url.value = "";
       saveName.value = "";
@@ -466,11 +713,11 @@ async function doSaveNew() {
 <template>
   <div class="sub-page">
     <div class="head">
-      <h1>订阅</h1>
-      <span class="hint">{{ subscriptions.length }} 个订阅组</span>
-      <button class="mini accent" @click="refreshAll" :disabled="refreshingAll">{{ refreshingAll ? "更新中…" : "全部更新" }}</button>
-      <button class="mini accent" @click="openMulti">多订阅选节点入组…</button>
-      <span v-if="autoEnabled" class="hint">自动更新开（{{ autoMinutes }} 分钟）</span>
+      <h1>{{ tt("title") }}</h1>
+      <span class="hint">{{ tt("subCount", { n: subscriptions.length }) }}</span>
+      <button class="mini accent" @click="refreshAll" :disabled="refreshingAll">{{ refreshingAll ? tt("updating") : tt("refreshAll") }}</button>
+      <button class="mini accent" @click="openMulti">{{ tt("multiPick") }}</button>
+      <span v-if="autoEnabled" class="hint">{{ tt("autoOn", { minutes: autoMinutes }) }}</span>
       <span class="spacer"></span>
       <span v-if="msg" class="ok">{{ msg }}</span>
       <span v-if="err" class="err">{{ err }}</span>
@@ -480,7 +727,7 @@ async function doSaveNew() {
     <section v-if="subscriptions.length" class="list">
       <table>
         <thead>
-          <tr><th class="c-name">名称</th><th class="c-url">地址</th><th class="c-meta">流量</th><th class="c-meta">更新</th><th class="c-ops"></th></tr>
+          <tr><th class="c-name">{{ tt("name") }}</th><th class="c-url">{{ tt("colUrl") }}</th><th class="c-meta">{{ tt("colTraffic") }}</th><th class="c-meta">{{ tt("update") }}</th><th class="c-ops"></th></tr>
         </thead>
         <tbody>
           <template v-for="g in subscriptions" :key="g.id">
@@ -491,23 +738,23 @@ async function doSaveNew() {
                 <template v-if="userInfo(g)">
                   {{ fmtBytes((userInfo(g)!.upload || 0) + (userInfo(g)!.download || 0)) }}/{{ fmtBytes(userInfo(g)!.total || 0) }}
                 </template>
-                <span v-else class="dim">—</span>
+                <span v-else class="dim">{{ tt("dash") }}</span>
               </td>
               <td class="c-meta ell" :title="updatedTooltip(g)">
                 <span :class="{ 'auto-due': autoInfo(g)?.due }">
                   {{ fmtRelTime(g.last_update_epoch) }}
                   <span v-if="autoInfo(g) && !autoInfo(g)!.due" class="dim">({{ fmtCountdown(autoInfo(g)!.next) }})</span>
-                  <span v-else-if="autoInfo(g)?.due">已到期</span>
+                  <span v-else-if="autoInfo(g)?.due">{{ tt("dueShort") }}</span>
                 </span>
               </td>
               <td class="ops">
-                <button class="ghost mini icon-btn" title="编辑 URL/Header" @click="startEdit(g)">✎</button>
-                <button class="ghost mini icon-btn" title="将本订阅节点加入分组" @click="openCopy(g)">＋</button>
-                <button class="mini" :disabled="refreshing[g.id]" :title="refreshing[g.id] ? '更新中…' : '立即抓取更新'" @click="refreshSub(g)">
-                  {{ refreshing[g.id] ? "…" : "更新" }}
+                <button class="ghost mini icon-btn" :title="tt('editTip')" @click="startEdit(g)">✎</button>
+                <button class="ghost mini icon-btn" :title="tt('copyTip')" @click="openCopy(g)">＋</button>
+                <button class="mini" :disabled="refreshing[g.id]" :title="refreshing[g.id] ? tt('updating') : tt('refreshNow')" @click="refreshSub(g)">
+                  {{ refreshing[g.id] ? "…" : tt("update") }}
                 </button>
-                <button class="ghost mini icon-btn" title="查看节点" @click="emit('saved', g.id)">▸</button>
-                <button class="ghost mini icon-btn danger" title="删除订阅" @click="delSub(g)">✕</button>
+                <button class="ghost mini icon-btn" :title="tt('viewNodes')" @click="emit('saved', g.id)">▸</button>
+                <button class="ghost mini icon-btn danger" :title="tt('deleteSub')" @click="delSub(g)">✕</button>
               </td>
             </tr>
 
@@ -516,18 +763,18 @@ async function doSaveNew() {
               <td colspan="5">
                 <div class="editor">
                   <div class="grid">
-                    <label>名称</label>
+                    <label>{{ tt("name") }}</label>
                     <input v-model="editName" class="inp" />
-                    <label>订阅地址</label>
-                    <input v-model="editUrl" class="inp mono" placeholder="https://example.com/sub 或 ...?clash=2" />
-                    <label>User-Agent</label>
-                    <input v-model="editUA" class="inp mono" placeholder="如 clash-verge/v2.5.2（留空则不发送）" />
-                    <label>额外请求头</label>
-                    <textarea v-model="editExtrasText" rows="2" class="inp mono" placeholder="Referer: https://example.com&#10;Authorization: Bearer xxx" />
+                    <label>{{ tt("subUrl") }}</label>
+                    <input v-model="editUrl" class="inp mono" :placeholder="tt('editUrlPh')" />
+                    <label>{{ tt("userAgent") }}</label>
+                    <input v-model="editUA" class="inp mono" :placeholder="tt('uaPh')" />
+                    <label>{{ tt("extraHeaders") }}</label>
+                    <textarea v-model="editExtrasText" rows="2" class="inp mono" :placeholder="tt('extrasPh')" />
                   </div>
                   <div class="btns">
-                    <button :disabled="savingEdit" @click="saveEdit">{{ savingEdit ? "保存中…" : "保存修改" }}</button>
-                    <button class="ghost" @click="cancelEdit">取消</button>
+                    <button :disabled="savingEdit" @click="saveEdit">{{ savingEdit ? tt("saving") : tt("saveChanges") }}</button>
+                    <button class="ghost" @click="cancelEdit">{{ tt("cancel") }}</button>
                   </div>
                 </div>
               </td>
@@ -536,21 +783,21 @@ async function doSaveNew() {
         </tbody>
       </table>
     </section>
-    <div class="empty" v-if="!subscriptions.length && !copyOf">还没有订阅组 — 在下方「抓取新订阅」创建。</div>
+    <div class="empty" v-if="!subscriptions.length && !copyOf">{{ tt("emptyState") }}</div>
 
     <!-- copy subscription nodes into a group -->
     <div v-if="copyOf" class="dialog-mask" @click.self="closeCopy">
       <div class="dialog">
-        <h3>将「{{ copyOf.name }}」的节点加入分组</h3>
+        <h3>{{ tt("copyTitle", { name: copyOf.name }) }}</h3>
         <div class="dialog-row">
-          <label>目标分组</label>
+          <label>{{ tt("targetGroup") }}</label>
           <select v-model="copyTarget" class="inp sel">
             <option v-for="g in targetGroups()" :key="g.id" :value="g.id">{{ g.name }}</option>
           </select>
         </div>
         <div class="dialog-actions">
           <span class="spacer"></span>
-          <label class="check"><input type="checkbox" :checked="copyNodesList.every((n) => copySel[n.id])" @change="toggleCopyAll(($event.target as HTMLInputElement).checked)" /> 全选</label>
+          <label class="check"><input type="checkbox" :checked="copyNodesList.every((n) => copySel[n.id])" @change="toggleCopyAll(($event.target as HTMLInputElement).checked)" /> {{ tt("selectAll") }}</label>
         </div>
         <div class="node-pick">
           <label v-for="n in copyNodesList" :key="n.id" class="pick">
@@ -561,9 +808,9 @@ async function doSaveNew() {
         <div class="dialog-btns">
           <span v-if="err" class="err">{{ err }}</span>
           <span class="spacer"></span>
-          <button class="ghost" @click="closeCopy">取消</button>
+          <button class="ghost" @click="closeCopy">{{ tt("cancel") }}</button>
           <button :disabled="copyBusy || copyTarget == null" @click="doCopyToGroup">
-            {{ copyBusy ? "加入中…" : `加入 ${copyNodesList.filter((n) => copySel[n.id]).length} 个节点` }}
+            {{ copyBusy ? tt("joining") : tt("joinCount", { n: copyNodesList.filter((n) => copySel[n.id]).length }) }}
           </button>
         </div>
       </div>
@@ -572,10 +819,10 @@ async function doSaveNew() {
     <!-- multi-subscription node picker -->
     <div v-if="multiOpen" class="dialog-mask" @click.self="closeMulti">
       <div class="dialog wide">
-        <h3>从多个订阅选择节点导入分组</h3>
+        <h3>{{ tt("multiTitle") }}</h3>
         <div class="multi-layout">
           <div class="src-col">
-            <div class="src-title">订阅源</div>
+            <div class="src-title">{{ tt("srcTitle") }}</div>
             <label v-for="g in subscriptions" :key="g.id" class="pick">
               <input type="checkbox" :checked="srcCheck[g.id]" @change="onToggleSource(g, ($event.target as HTMLInputElement).checked)" />
               <span class="src-name">{{ g.name }}</span>
@@ -584,13 +831,13 @@ async function doSaveNew() {
           </div>
           <div class="node-col">
             <div class="dialog-row">
-              <input v-model="query" class="inp" placeholder="搜索备注 / 类型（如 HKG、trojan）" />
+              <input v-model="query" class="inp" :placeholder="tt('searchPh')" />
             </div>
             <div class="dialog-actions">
-              <span>已选 {{ chosenCount }} / {{ mergedNodes.length }}</span>
+              <span>{{ tt("selCount", { n: chosenCount, m: mergedNodes.length }) }}</span>
               <span class="spacer"></span>
-              <button class="ghost mini" @click="toggleAllVisible(true)">全选(当前筛选)</button>
-              <button class="ghost mini" @click="toggleAllVisible(false)">清空筛选</button>
+              <button class="ghost mini" @click="toggleAllVisible(true)">{{ tt("selectFiltered") }}</button>
+              <button class="ghost mini" @click="toggleAllVisible(false)">{{ tt("clearSel") }}</button>
             </div>
             <div class="node-pick">
               <label v-for="n in filteredMerged.slice(0, 600)" :key="n.id" class="pick">
@@ -598,14 +845,14 @@ async function doSaveNew() {
                 <code>{{ n.type }}</code> {{ n.remark }}
               </label>
               <div v-if="filteredMerged.length > 600" class="truncated">
-                仅展示前 600 条（共 {{ filteredMerged.length }}），搜索可缩小范围
+                {{ tt("showTrunc", { n: filteredMerged.length }) }}
               </div>
-              <div v-if="!filteredMerged.length" class="truncated">没有匹配节点</div>
+              <div v-if="!filteredMerged.length" class="truncated">{{ tt("noMatch") }}</div>
             </div>
           </div>
         </div>
         <div class="dialog-row">
-          <label>导入到分组</label>
+          <label>{{ tt("importToGroup") }}</label>
           <select v-model="multiTarget" class="inp sel">
             <option v-for="g in allGroups" :key="g.id" :value="g.id">{{ g.name }}</option>
           </select>
@@ -614,9 +861,9 @@ async function doSaveNew() {
         </div>
         <div class="dialog-btns">
           <span class="spacer"></span>
-          <button class="ghost" @click="closeMulti">取消</button>
+          <button class="ghost" @click="closeMulti">{{ tt("cancel") }}</button>
           <button :disabled="multiBusy || multiTarget == null || !chosenCount" @click="doMultiCopy">
-            {{ multiBusy ? "导入中…" : `导入 ${chosenCount} 个节点` }}
+            {{ multiBusy ? tt("importing") : tt("importCount", { n: chosenCount }) }}
           </button>
         </div>
       </div>
@@ -625,22 +872,22 @@ async function doSaveNew() {
     <!-- new subscription -->
     <section class="new">
       <details>
-        <summary>＋ 抓取新订阅</summary>
+        <summary>{{ tt("fetchNew") }}</summary>
         <div class="new-form">
           <div class="row">
-            <input v-model="url" class="inp" placeholder="https://example.com/xxxx/sub 或 ...?clash=2" @keydown.enter="doFetch" />
-            <button :disabled="fetchBusy || !url.trim()" @click="doFetch">{{ fetchBusy ? "抓取中…" : "抓取解析" }}</button>
+            <input v-model="url" class="inp" :placeholder="tt('subUrlPh')" @keydown.enter="doFetch" />
+            <button :disabled="fetchBusy || !url.trim()" @click="doFetch">{{ fetchBusy ? tt("fetching") : tt("fetchParse") }}</button>
           </div>
           <div class="grid">
-            <label>User-Agent</label>
-            <input v-model="ua" class="inp mono" placeholder="如 clash-verge/v2.5.2" />
-            <label>额外请求头</label>
-            <textarea v-model="extraHeaders" rows="2" class="inp mono" placeholder="Referer: https://example.com&#10;每行 Key: Value" />
+            <label>{{ tt("userAgent") }}</label>
+            <input v-model="ua" class="inp mono" :placeholder="tt('uaExamplePh')" />
+            <label>{{ tt("extraHeaders") }}</label>
+            <textarea v-model="extraHeaders" rows="2" class="inp mono" :placeholder="tt('headersPh')" />
           </div>
           <div v-if="preview" class="preview">
-            <span>解析 {{ preview.nodes.length }} 节点 · 错误 {{ preview.errors.length }}</span>
-            <input v-model="saveName" class="inp mono" placeholder="保存为订阅组名称" />
-            <button :disabled="!saveName.trim()" @click="doSaveNew">保存为新订阅组</button>
+            <span>{{ tt("parseSummary", { n: preview.nodes.length, m: preview.errors.length }) }}</span>
+            <input v-model="saveName" class="inp mono" :placeholder="tt('newGroupNamePh')" />
+            <button :disabled="!saveName.trim()" @click="doSaveNew">{{ tt("saveNewGroup") }}</button>
           </div>
         </div>
       </details>
@@ -657,7 +904,7 @@ async function doSaveNew() {
 .err { color: #ef4444; font-size: 12px; }
 .ok { color: #22c55e; font-size: 12px; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th, td { text-align: left; padding: 7px 8px; border-top: 1px solid var(--border); }
+th, td { text-align: start; padding: 7px 8px; border-top: 1px solid var(--border); }
 th { font-size: 11px; text-transform: uppercase; opacity: 0.7; }
 .url { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mono { font-family: ui-monospace, monospace; font-size: 11px; }
@@ -672,7 +919,7 @@ th.c-ops { width: 28%; }
 .c-ops button { margin-left: 4px; }
 .icon-btn { font-size: 12px; line-height: 1; padding: 2px 5px; }
 tr:hover td { background: rgba(59, 130, 246, 0.04); }
-.ops { white-space: nowrap; text-align: right; }
+.ops { white-space: nowrap; text-align: end; }
 button {
   border: 0; border-radius: 6px; background: var(--accent); color: #fff;
   padding: 5px 12px; font-size: 12px; cursor: pointer;

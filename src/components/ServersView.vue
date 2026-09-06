@@ -29,6 +29,266 @@ import {
   type Node,
   type Settings,
 } from "../api";
+import { useDict, fmt, type Dict } from "../i18n";
+
+const zhL = {
+  titleGroups: "分组",
+  manageGroups: "管理分组",
+  addGroup: "＋ 新建",
+  addStrategy: "＋策略组",
+  strategyTip: "按成员分组延迟自动选最快的组（v2rayN 策略组）",
+  renameBtn: "✎ 改名",
+  deleteBtn: "✕ 删除",
+  deleteGroupTip: "删除分组（含节点）",
+  chipRunOn: "运行中 · 系统代理开",
+  chipRunOff: "运行中 · 系统代理关",
+  chipStopped: "已停止",
+  modeTip: "分流模式",
+  modeGlobal: "全局代理",
+  modeRule: "规则(绕过大陆)",
+  modeDirect: "直连",
+  proxyTip: "内核运行中可随时开关系统代理",
+  sysProxy: "系统代理",
+  start: "启动",
+  stop: "停止",
+  starting: "启动中…",
+  importPlaceholder: "粘贴分享链接 / 订阅内容（base64、Clash、JSON），导入到当前分组",
+  importBtn: "导入到当前分组",
+  importing: "导入中…",
+  importOk: "导入 {n} 个节点，错误 {e}",
+  nodeCount: "节点（{n}）",
+  hiddenV6: "已隐藏 {n} 个 IPv6",
+  sortTip: "按延迟升序排列（失败与未测在后）",
+  sortByDelay: "按延迟排序",
+  testAll: "全部测速",
+  testing: "测速中…",
+  thType: "类型",
+  thRemark: "备注",
+  thLatency: "延迟",
+  thOps: "操作",
+  test: "测速",
+  copy: "复制",
+  copyTip: "复制分享链接",
+  qrTip: "二维码分享",
+  remove: "删除",
+  joinIn: "＋入组",
+  joinTip: "把该策略组加入其它分组（作为伪节点）",
+  stratDel: "✕策略",
+  stratDelTip: "删除该策略组",
+  emptyNoNodes: "当前分组没有节点 — 在上方粘贴导入，或在「订阅」页抓取保存。",
+  emptyAllV6: "该组节点全部为 IPv6（已按设置过滤）— 可在「设置」关闭过滤。",
+  stratTitle: "新建策略组（成员分组自动选优）",
+  nameLabel: "名称",
+  namePlaceholder: "如 自动选优",
+  autoCheck: "自动（启动时测速缺失的成员，选最快节点）",
+  noMembers: "没有可选成员分组",
+  cancel: "取消",
+  creating: "创建中…",
+  create: "创建",
+  stratNeedName: "请填写名称并选择至少一个成员分组",
+  joinTitle: "把「{remark}」加入分组",
+  joinTargetLabel: "目标分组",
+  joinNoGroups: "还没有其它分组 — 填名称直接新建一个并加入：",
+  joinNewName: "新分组名称",
+  joining: "加入中…",
+  joinBtn: "加入",
+  joinCreateAndAdd: "新建并加入",
+  joinNeedTarget: "请选择目标分组，或填写新分组名称后加入",
+  joinOk: "已将「{remark}」加入分组「{group}」",
+  dupSuffix: "（已存在）",
+  delStrategyConfirm: "删除策略组「{name}」？",
+  delGroupConfirm: "删除分组「{name}」及其全部节点？",
+  promptNewGroup: "新分组名称",
+  promptRename: "重命名分组",
+  qrCopied: "链接已复制到剪贴板",
+  copyOk: "已复制「{remark}」链接",
+  copyFail: "复制失败",
+  copyFailManual: "复制失败（请使用 QR 弹窗内手动复制）",
+  switchedProxy: "已切换代理到「{remark}」",
+  proxyOnMsg: "系统代理已开启（关闭「停止」或再点开关即可还原）",
+  close: "关闭",
+  copyLink: "复制链接",
+  latDash: "—",
+  latFail: "失败",
+  latMs: "{n} ms",
+} as const;
+type DictKeys = keyof typeof zhL;
+const enL: Record<DictKeys, string> = {
+  titleGroups: "Groups",
+  manageGroups: "Manage groups",
+  addGroup: "+ New",
+  addStrategy: "+Strategy",
+  strategyTip:
+    "Auto-picks the fastest member group by per-member latency (v2rayN strategy group)",
+  renameBtn: "✎ Rename",
+  deleteBtn: "✕ Delete",
+  deleteGroupTip: "Delete group (with its nodes)",
+  chipRunOn: "Running · System proxy on",
+  chipRunOff: "Running · System proxy off",
+  chipStopped: "Stopped",
+  modeTip: "Routing mode",
+  modeGlobal: "Global",
+  modeRule: "Rule (bypass mainland)",
+  modeDirect: "Direct",
+  proxyTip: "Toggle the system proxy at any time while the core is running",
+  sysProxy: "System proxy",
+  start: "Start",
+  stop: "Stop",
+  starting: "Starting…",
+  importPlaceholder:
+    "Paste share links / subscription content (base64, Clash, JSON) to import into the current group",
+  importBtn: "Import to current group",
+  importing: "Importing…",
+  importOk: "Imported {n} node(s), {e} error(s)",
+  nodeCount: "Nodes ({n})",
+  hiddenV6: "{n} IPv6 hidden",
+  sortTip: "Sort by latency ascending (failed & untested last)",
+  sortByDelay: "Sort by latency",
+  testAll: "Test all",
+  testing: "Testing…",
+  thType: "Type",
+  thRemark: "Remark",
+  thLatency: "Latency",
+  thOps: "Actions",
+  test: "Test",
+  copy: "Copy",
+  copyTip: "Copy share link",
+  qrTip: "Share via QR code",
+  remove: "Delete",
+  joinIn: "+Join",
+  joinTip: "Mount this strategy group into other groups (as a pseudo node)",
+  stratDel: "✕Strategy",
+  stratDelTip: "Delete this strategy group",
+  emptyNoNodes:
+    "No nodes in this group yet — paste a link above to import, or fetch in the Subscriptions page.",
+  emptyAllV6:
+    "All nodes in this group are IPv6 (filtered by settings) — disable the filter in Settings.",
+  stratTitle: "New strategy group (auto-pick best members)",
+  nameLabel: "Name",
+  namePlaceholder: "e.g. auto-best",
+  autoCheck:
+    "Auto (test untested members at startup, pick the fastest node)",
+  noMembers: "No member groups available",
+  cancel: "Cancel",
+  creating: "Creating…",
+  create: "Create",
+  stratNeedName: "Enter a name and select at least one member group",
+  joinTitle: 'Add "{remark}" to a group',
+  joinTargetLabel: "Target group",
+  joinNoGroups: "No other groups yet — enter a name to create and join one:",
+  joinNewName: "New group name",
+  joining: "Joining…",
+  joinBtn: "Join",
+  joinCreateAndAdd: "Create & join",
+  joinNeedTarget:
+    "Select a target group, or enter a new group name to join",
+  joinOk: 'Added "{remark}" to group "{group}"',
+  dupSuffix: " (already exists)",
+  delStrategyConfirm: 'Delete strategy group "{name}"?',
+  delGroupConfirm: 'Delete group "{name}" and all its nodes?',
+  promptNewGroup: "New group name",
+  promptRename: "Rename group",
+  qrCopied: "Link copied to clipboard",
+  copyOk: 'Copied link for "{remark}"',
+  copyFail: "Copy failed",
+  copyFailManual: "Copy failed (use manual copy inside the QR dialog)",
+  switchedProxy: 'Switched proxy to "{remark}"',
+  proxyOnMsg: "System proxy enabled (press Stop or toggle again to restore)",
+  close: "Close",
+  copyLink: "Copy link",
+  latDash: "—",
+  latFail: "Failed",
+  latMs: "{n} ms",
+};
+const arL: Record<DictKeys, string> = {
+  titleGroups: "المجموعات",
+  manageGroups: "إدارة المجموعات",
+  addGroup: "＋ مجموعة جديدة",
+  addStrategy: "＋ إستراتيجية",
+  strategyTip:
+    "اختيار أسرع مجموعة تلقائيًا حسب زمن استجابة أعضائها (مجموعة إستراتيجية v2rayN)",
+  renameBtn: "✎ إعادة التسمية",
+  deleteBtn: "✕ حذف",
+  deleteGroupTip: "حذف المجموعة (بما تحويه من عقد)",
+  chipRunOn: "يعمل · وكيل النظام مفعّل",
+  chipRunOff: "يعمل · وكيل النظام معطّل",
+  chipStopped: "متوقف",
+  modeTip: "نمط التوجيه",
+  modeGlobal: "وكيل شامل",
+  modeRule: "قواعد (تجاوز البر الرئيسي للصين)",
+  modeDirect: "مباشر",
+  proxyTip: "يمكن تشغيل وكيل النظام أو إيقافه في أي وقت أثناء تشغيل النواة",
+  sysProxy: "وكيل النظام",
+  start: "تشغيل",
+  stop: "إيقاف",
+  starting: "جارٍ التشغيل…",
+  importPlaceholder:
+    "الصق روابط المشاركة / محتوى الاشتراكات (base64 أو Clash أو JSON) لاستيرادها إلى المجموعة الحالية",
+  importBtn: "استيراد إلى المجموعة الحالية",
+  importing: "جارٍ الاستيراد…",
+  importOk: "تم استيراد {n} من العقد، مع {e} من الأخطاء",
+  nodeCount: "العقد ({n})",
+  hiddenV6: "تم إخفاء {n} من عقد IPv6",
+  sortTip: "الترتيب حسب زمن الاستجابة تصاعديًا (الفاشلة وغير المختبرة في النهاية)",
+  sortByDelay: "الترتيب حسب زمن الاستجابة",
+  testAll: "قياس الكل",
+  testing: "جارٍ القياس…",
+  thType: "النوع",
+  thRemark: "الملاحظة",
+  thLatency: "زمن الاستجابة",
+  thOps: "إجراءات",
+  test: "قياس",
+  copy: "نسخ",
+  copyTip: "نسخ رابط المشاركة",
+  qrTip: "مشاركة عبر رمز QR",
+  remove: "حذف",
+  joinIn: "＋ ضمّ",
+  joinTip: "ضمّ هذه المجموعة الإستراتيجية إلى مجموعات أخرى (كعقدة وهمية)",
+  stratDel: "✕ إستراتيجية",
+  stratDelTip: "حذف هذه المجموعة الإستراتيجية",
+  emptyNoNodes:
+    "لا توجد عقد في المجموعة الحالية — الصق رابطًا أعلاه للاستيراد، أو اجلبها من صفحة «الاشتراكات».",
+  emptyAllV6:
+    "جميع عقد هذه المجموعة من IPv6 (مُصفاة حسب الإعدادات) — يمكنك إيقاف التصفية من «الإعدادات».",
+  stratTitle: "مجموعة إستراتيجية جديدة (اختيار أفضل الأعضاء تلقائيًا)",
+  nameLabel: "الاسم",
+  namePlaceholder: "مثال: الأفضل تلقائيًا",
+  autoCheck: "تلقائي (قياس الأعضاء غير المُقاسَة عند التشغيل واختيار الأسرع منها)",
+  noMembers: "لا توجد مجموعات أعضاء متاحة",
+  cancel: "إلغاء",
+  creating: "جارٍ الإنشاء…",
+  create: "إنشاء",
+  stratNeedName: "أدخل اسمًا واختر مجموعة عضو واحدة على الأقل",
+  joinTitle: "ضمّ «{remark}» إلى مجموعة",
+  joinTargetLabel: "المجموعة الهدف",
+  joinNoGroups: "لا توجد مجموعات أخرى بعد — أدخل اسمًا لإنشاء مجموعة جديدة والضم إليها:",
+  joinNewName: "اسم المجموعة الجديدة",
+  joining: "جارٍ الضم…",
+  joinBtn: "ضمّ",
+  joinCreateAndAdd: "إنشاء والضم",
+  joinNeedTarget: "اختر مجموعة هدف، أو أدخل اسم مجموعة جديدة للضم إليها",
+  joinOk: "تمت إضافة «{remark}» إلى المجموعة «{group}»",
+  dupSuffix: " (موجودة مسبقًا)",
+  delStrategyConfirm: "حذف المجموعة الإستراتيجية «{name}»؟",
+  delGroupConfirm: "حذف المجموعة «{name}» وكل عقدها؟",
+  promptNewGroup: "اسم المجموعة الجديدة",
+  promptRename: "إعادة تسمية المجموعة",
+  qrCopied: "تم نسخ الرابط إلى الحافظة",
+  copyOk: "تم نسخ رابط «{remark}»",
+  copyFail: "فشل النسخ",
+  copyFailManual: "فشل النسخ (استخدم النسخ اليدوي داخل نافذة رمز QR)",
+  switchedProxy: "تم تحويل الوكيل إلى «{remark}»",
+  proxyOnMsg: "تم تفعيل وكيل النظام (أوقفه بزر «إيقاف» أو بدّل الخيار للتراجع)",
+  close: "إغلاق",
+  copyLink: "نسخ الرابط",
+  latDash: "—",
+  latFail: "فشل",
+  latMs: "{n} ms",
+};
+const dict = useDict({ zh: zhL as Dict, en: enL, ar: arL });
+function tt(k: DictKeys, p?: Record<string, string | number>): string {
+  return fmt(dict.value[k] as string, p);
+}
 
 const groups = ref<Group[]>([]);
 const settings = ref<Settings | null>(null);
@@ -149,7 +409,7 @@ async function doImport() {
   err.value = "";
   try {
     const res = await importToGroup(currentGroupId(), importText.value);
-    importMsg.value = `导入 ${res.nodes.length} 个节点，错误 ${res.errors.length}`;
+    importMsg.value = tt("importOk", { n: res.nodes.length, e: res.errors.length });
     if (res.errors.length) {
       err.value = res.errors.slice(0, 5).map((e) => e.reason).join("；");
     }
@@ -206,7 +466,7 @@ async function createStrategy() {
   try {
     const ids = normalGroups.value.filter((g) => stratMembers.value[g.id]).map((g) => g.id);
     if (!stratName.value.trim() || !ids.length) {
-      err.value = "请填写名称并选择至少一个成员分组";
+      err.value = tt("stratNeedName");
       return;
     }
     await createStrategyGroup(currentGroupId(), stratName.value.trim(), stratAuto.value, ids);
@@ -225,7 +485,7 @@ function stratIdFrom(n: Node): number {
 
 async function deleteStrategyNode(n: Node) {
   const sid = stratIdFrom(n);
-  if (!sid || !confirm(`删除策略组「${n.remark}」？`)) return;
+  if (!sid || !confirm(tt("delStrategyConfirm", { name: n.remark }))) return;
   await deleteGroup(sid);
   await reloadNodes();
 }
@@ -261,7 +521,7 @@ async function doJoin() {
       // create a fresh group as the target
       const name = newJoinName.value.trim();
       if (!name) {
-        err.value = "请选择目标分组，或填写新分组名称后加入";
+        err.value = tt("joinNeedTarget");
         return;
       }
       const created = await createGroup(name);
@@ -272,7 +532,9 @@ async function doJoin() {
       groups.value.find((g) => g.id === target)?.name ??
       newJoinName.value.trim() ??
       "";
-    shareMsg.value = `已将「${n.remark}」加入分组「${targetName}」${out.duplicated ? "（已存在）" : ""}`;
+    shareMsg.value =
+      tt("joinOk", { remark: n.remark, group: targetName }) +
+      (out.duplicated ? tt("dupSuffix") : "");
     joinOf.value = null;
     if (out.inserted > 0) await loadAll();
   } catch (e) {
@@ -285,13 +547,13 @@ async function doJoin() {
 async function removeGroup() {
   const gid = currentGroupId();
   if (gid === 1) return;
-  if (!confirm(`删除分组「${currentGroup().name}」及其全部节点？`)) return;
+  if (!confirm(tt("delGroupConfirm", { name: currentGroup().name }))) return;
   await deleteGroup(gid);
   await loadAll();
 }
 
 async function newGroup() {
-  const name = prompt("新分组名称", "");
+  const name = prompt(tt("promptNewGroup"), "");
   if (!name?.trim()) return;
   const g = await createGroup(name.trim());
   await loadAll();
@@ -301,7 +563,7 @@ async function newGroup() {
 async function renameCurrentGroup() {
   const gid = currentGroupId();
   if (gid === 1) return;
-  const name = prompt("重命名分组", currentGroup().name);
+  const name = prompt(tt("promptRename"), currentGroup().name);
   if (!name?.trim()) return;
   await renameGroup(gid, name.trim());
   await loadAll();
@@ -340,7 +602,7 @@ async function copyText(text: string): Promise<boolean> {
 async function copyQrLink() {
   if (!qrModal.value) return;
   const ok = await copyText(qrModal.value.link);
-  shareMsg.value = ok ? "链接已复制到剪贴板" : "复制失败";
+  shareMsg.value = ok ? tt("qrCopied") : tt("copyFail");
 }
 
 async function copyNodeLink(groupId: number, nodeId: string, remark: string) {
@@ -349,7 +611,7 @@ async function copyNodeLink(groupId: number, nodeId: string, remark: string) {
   try {
     const link = await nodeEncode(groupId, nodeId);
     const ok = await copyText(link);
-    shareMsg.value = ok ? `已复制「${remark}」链接` : "复制失败（请使用 QR 弹窗内手动复制）";
+    shareMsg.value = ok ? tt("copyOk", { remark }) : tt("copyFailManual");
   } catch (e) {
     err.value = String(e);
   }
@@ -399,7 +661,9 @@ async function pickNode(nodeId: string) {
     try {
       const run = await coreStart();
       status.value = run.status;
-      switchMsg.value = `已切换代理到「${nodes.value.find((n) => n.id === nodeId)?.remark ?? nodeId}」`;
+      switchMsg.value = tt("switchedProxy", {
+        remark: nodes.value.find((n) => n.id === nodeId)?.remark ?? nodeId,
+      });
     } catch (e) {
       err.value = String(e);
     } finally {
@@ -437,7 +701,7 @@ async function toggleProxy(on: boolean) {
   switchMsg.value = "";
   try {
     status.value = await proxySet(on);
-    if (on) switchMsg.value = "系统代理已开启（关闭「停止」或再点开关即可还原）";
+    if (on) switchMsg.value = tt("proxyOnMsg");
   } catch (e) {
     err.value = String(e);
     await refreshStatus(); // revert checkbox to real state
@@ -450,10 +714,10 @@ async function changeMode(mode: string) {
 
 function delayText(n: Node): string {
   const m = delayMap.value[n.id];
-  if (!m) return "—";
-  if (m.delay_ms != null) return `${m.delay_ms} ms`;
-  if (m.error) return "失败";
-  return "测速中…"; // probe in flight (no result yet)
+  if (!m) return tt("latDash");
+  if (m.delay_ms != null) return tt("latMs", { n: m.delay_ms });
+  if (m.error) return tt("latFail");
+  return tt("testing"); // probe in flight (no result yet)
 }
 
 onMounted(loadAll);
@@ -463,34 +727,34 @@ onMounted(loadAll);
   <div class="servers-page">
     <div class="toolbar">
       <div class="trow">
-        <h1>分组</h1>
+        <h1>{{ tt("titleGroups") }}</h1>
         <select class="group-select" :value="currentGroupId()" @change="switchGroup(Number(($event.target as HTMLSelectElement).value))">
           <option v-for="g in groups.filter((x) => (x.kind ?? 'normal') === 'normal')" :key="g.id" :value="g.id">{{ g.name }}</option>
         </select>
-        <span class="group-ops" title="管理分组">
-          <button class="ghost mini" @click="newGroup">＋ 新建</button>
-          <button class="ghost mini" title="按成员分组延迟自动选最快的组（v2rayN 策略组）" @click="openStrategyDialog">＋策略组</button>
-          <button v-if="currentGroupId() !== 1" class="ghost mini" @click="renameCurrentGroup">✎ 改名</button>
-          <button v-if="currentGroupId() !== 1" class="ghost mini danger" title="删除分组（含节点）" @click="removeGroup">✕ 删除</button>
+        <span class="group-ops" :title="tt('manageGroups')">
+          <button class="ghost mini" @click="newGroup">{{ tt("addGroup") }}</button>
+          <button class="ghost mini" :title="tt('strategyTip')" @click="openStrategyDialog">{{ tt("addStrategy") }}</button>
+          <button v-if="currentGroupId() !== 1" class="ghost mini" @click="renameCurrentGroup">{{ tt("renameBtn") }}</button>
+          <button v-if="currentGroupId() !== 1" class="ghost mini danger" :title="tt('deleteGroupTip')" @click="removeGroup">{{ tt("deleteBtn") }}</button>
         </span>
         <span class="spacer"></span>
       </div>
       <div class="trow trow-ops">
         <label class="chip" :class="status.running ? 'on' : 'off'">
           <span class="dot"></span>
-          {{ status.running ? `运行中 · 系统代理${status.proxy_enabled ? "开" : "关"}` : "已停止" }}
+          {{ status.running ? (status.proxy_enabled ? tt("chipRunOn") : tt("chipRunOff")) : tt("chipStopped") }}
         </label>
-        <select class="group-select" :value="settings?.mode ?? 'global'" title="分流模式" @change="changeMode(($event.target as HTMLSelectElement).value)">
-          <option value="global">全局代理</option>
-          <option value="rule">规则(绕过大陆)</option>
-          <option value="direct">直连</option>
+        <select class="group-select" :value="settings?.mode ?? 'global'" :title="tt('modeTip')" @change="changeMode(($event.target as HTMLSelectElement).value)">
+          <option value="global">{{ tt("modeGlobal") }}</option>
+          <option value="rule">{{ tt("modeRule") }}</option>
+          <option value="direct">{{ tt("modeDirect") }}</option>
         </select>
-        <label class="proxy-toggle" title="内核运行中可随时开关系统代理">
+        <label class="proxy-toggle" :title="tt('proxyTip')">
           <input type="checkbox" :checked="status.proxy_enabled" :disabled="!status.running" @change="toggleProxy(($event.target as HTMLInputElement).checked)" />
-          系统代理
+          {{ tt("sysProxy") }}
         </label>
         <button class="primary" :disabled="startBusy || !visibleNodes.length" @click="toggleStart">
-          {{ status.running ? "停止" : startBusy ? "启动中…" : "启动" }}
+          {{ status.running ? tt("stop") : startBusy ? tt("starting") : tt("start") }}
         </button>
         <span class="spacer"></span>
       </div>
@@ -504,30 +768,30 @@ onMounted(loadAll);
 
     <section v-if="!isVirtualCurrent" class="import-card">
       <div class="row">
-        <textarea v-model="importText" rows="2" placeholder="粘贴分享链接 / 订阅内容（base64、Clash、JSON），导入到当前分组" />
-        <button :disabled="importBusy || !importText.trim()" @click="doImport">{{ importBusy ? "导入中…" : "导入到当前分组" }}</button>
+        <textarea v-model="importText" rows="2" :placeholder="tt('importPlaceholder')" />
+        <button :disabled="importBusy || !importText.trim()" @click="doImport">{{ importBusy ? tt("importing") : tt("importBtn") }}</button>
       </div>
       <span v-if="importMsg" class="ok">{{ importMsg }}</span>
     </section>
 
     <section class="nodes">
       <div class="nodes-head">
-        <strong>节点（{{ visibleNodes.length }}）</strong>
+        <strong>{{ tt("nodeCount", { n: visibleNodes.length }) }}</strong>
         <span v-if="settings?.filter_ipv6 && visibleNodes.length < nodes.length" class="dim">
-          已隐藏 {{ nodes.length - visibleNodes.length }} 个 IPv6
+          {{ tt("hiddenV6", { n: nodes.length - visibleNodes.length }) }}
         </span>
         <span class="spacer"></span>
-        <label class="sort-toggle" title="按延迟升序排列（失败与未测在后）">
+        <label class="sort-toggle" :title="tt('sortTip')">
           <input type="checkbox" :checked="sortByDelay" @change="toggleSort(($event.target as HTMLInputElement).checked)" />
-          按延迟排序
+          {{ tt("sortByDelay") }}
         </label>
         <button class="ghost" :disabled="testingAll || !visibleNodes.length" @click="testAll">
-          {{ testingAll ? "测速中…" : "全部测速" }}
+          {{ testingAll ? tt("testing") : tt("testAll") }}
         </button>
       </div>
       <table>
         <thead>
-          <tr><th></th><th>类型</th><th>备注</th><th>延迟</th><th>操作</th></tr>
+          <tr><th></th><th>{{ tt("thType") }}</th><th>{{ tt("thRemark") }}</th><th>{{ tt("thLatency") }}</th><th>{{ tt("thOps") }}</th></tr>
         </thead>
         <tbody>
           <tr v-for="n in sortedNodes" :key="n.id" :class="{ current: n.id === selectedNodeId() }">
@@ -536,41 +800,41 @@ onMounted(loadAll);
             <td class="remark" @click="pickNode(n.id)">{{ n.remark }}</td>
             <td :class="delayMap[n.id]?.error ? 'bad' : ''">{{ delayText(n) }}</td>
             <td class="ops">
-              <button class="ghost" :disabled="!!delayMap[n.id] && delayMap[n.id]!.delay_ms == null && !delayMap[n.id]!.error" @click="testNode(n.id)">测速</button>
+              <button class="ghost" :disabled="!!delayMap[n.id] && delayMap[n.id]!.delay_ms == null && !delayMap[n.id]!.error" @click="testNode(n.id)">{{ tt("test") }}</button>
               <template v-if="n.type !== 'strategy'">
-                <button class="ghost" :disabled="qrBusy" title="复制分享链接" @click="copyNodeLink(n.group_id, n.id, n.remark)">复制</button>
-                <button class="ghost" title="二维码分享" @click="showNodeQr(n.group_id, n.id, n.remark)">QR</button>
-                <button v-if="!isVirtualCurrent" class="ghost danger" @click="removeNode(n.id)">删除</button>
+                <button class="ghost" :disabled="qrBusy" :title="tt('copyTip')" @click="copyNodeLink(n.group_id, n.id, n.remark)">{{ tt("copy") }}</button>
+                <button class="ghost" :title="tt('qrTip')" @click="showNodeQr(n.group_id, n.id, n.remark)">QR</button>
+                <button v-if="!isVirtualCurrent" class="ghost danger" @click="removeNode(n.id)">{{ tt("remove") }}</button>
               </template>
               <template v-else>
-                <button class="ghost" title="把该策略组加入其它分组（作为伪节点）" @click="openJoin(n)">＋入组</button>
-                <button class="ghost danger" title="删除该策略组" @click="deleteStrategyNode(n)">✕策略</button>
+                <button class="ghost" :title="tt('joinTip')" @click="openJoin(n)">{{ tt("joinIn") }}</button>
+                <button class="ghost danger" :title="tt('stratDelTip')" @click="deleteStrategyNode(n)">{{ tt("stratDel") }}</button>
               </template>
             </td>
           </tr>
         </tbody>
       </table>
-      <div v-if="!nodes.length" class="empty">当前分组没有节点 — 在上方粘贴导入，或在「订阅」页抓取保存。</div>
-      <div v-else-if="!visibleNodes.length" class="empty">该组节点全部为 IPv6（已按设置过滤）— 可在「设置」关闭过滤。</div>
+      <div v-if="!nodes.length" class="empty">{{ tt("emptyNoNodes") }}</div>
+      <div v-else-if="!visibleNodes.length" class="empty">{{ tt("emptyAllV6") }}</div>
     </section>
 
     <!-- create strategy group -->
     <div v-if="stratOpen" class="dialog-mask" @click.self="stratOpen = false">
       <div class="dialog">
-        <h3>新建策略组（成员分组自动选优）</h3>
-        <div class="dialog-row"><label>名称</label><input v-model="stratName" class="inp" placeholder="如 自动选优" /></div>
-        <label class="check" style="align-self: flex-start"><input v-model="stratAuto" type="checkbox" /> 自动（启动时测速缺失的成员，选最快节点）</label>
+        <h3>{{ tt("stratTitle") }}</h3>
+        <div class="dialog-row"><label>{{ tt("nameLabel") }}</label><input v-model="stratName" class="inp" :placeholder="tt('namePlaceholder')" /></div>
+        <label class="check" style="align-self: flex-start"><input v-model="stratAuto" type="checkbox" /> {{ tt("autoCheck") }}</label>
         <div class="node-pick">
           <label v-for="g in normalGroups" :key="g.id" class="pick">
             <input type="checkbox" v-model="stratMembers[g.id]" /> {{ g.name }}
           </label>
-          <div v-if="!normalGroups.length" class="dim">没有可选成员分组</div>
+          <div v-if="!normalGroups.length" class="dim">{{ tt("noMembers") }}</div>
         </div>
         <div class="dialog-btns">
           <span v-if="err" class="err">{{ err }}</span>
           <span class="spacer"></span>
-          <button class="ghost" @click="stratOpen = false">取消</button>
-          <button :disabled="stratBusy" @click="createStrategy">{{ stratBusy ? "创建中…" : "创建" }}</button>
+          <button class="ghost" @click="stratOpen = false">{{ tt("cancel") }}</button>
+          <button :disabled="stratBusy" @click="createStrategy">{{ stratBusy ? tt("creating") : tt("create") }}</button>
         </div>
       </div>
     </div>
@@ -578,24 +842,24 @@ onMounted(loadAll);
     <!-- join strategy into another group -->
     <div v-if="joinOf" class="dialog-mask" @click.self="joinOf = null">
       <div class="dialog">
-        <h3>把「{{ joinOf.remark }}」加入分组</h3>
+        <h3>{{ tt("joinTitle", { remark: joinOf.remark }) }}</h3>
         <template v-if="joinableGroups.length">
-          <div class="dialog-row"><label>目标分组</label>
+          <div class="dialog-row"><label>{{ tt("joinTargetLabel") }}</label>
             <select v-model="joinTarget" class="inp sel">
               <option v-for="g in joinableGroups" :key="g.id" :value="g.id">{{ g.name }}</option>
             </select>
           </div>
         </template>
         <template v-else>
-          <div class="dim" style="align-self: flex-start">还没有其它分组 — 填名称直接新建一个并加入：</div>
-          <input v-model="newJoinName" class="inp" placeholder="新分组名称" style="align-self: stretch" />
+          <div class="dim" style="align-self: flex-start">{{ tt("joinNoGroups") }}</div>
+          <input v-model="newJoinName" class="inp" :placeholder="tt('joinNewName')" style="align-self: stretch" />
         </template>
         <div class="dialog-btns">
           <span v-if="err" class="err">{{ err }}</span>
           <span class="spacer"></span>
-          <button class="ghost" @click="joinOf = null">取消</button>
+          <button class="ghost" @click="joinOf = null">{{ tt("cancel") }}</button>
           <button :disabled="joinBusy || (joinTarget == null && !newJoinName.trim())" @click="doJoin">
-            {{ joinBusy ? "加入中…" : joinTarget != null ? "加入" : "新建并加入" }}
+            {{ joinBusy ? tt("joining") : joinTarget != null ? tt("joinBtn") : tt("joinCreateAndAdd") }}
           </button>
         </div>
       </div>
@@ -609,8 +873,8 @@ onMounted(loadAll);
         <div class="qr-link" :title="qrModal.link">{{ qrModal.link }}</div>
         <div class="dialog-btns">
           <span class="spacer"></span>
-          <button class="ghost" @click="qrModal = null">关闭</button>
-          <button @click="copyQrLink">复制链接</button>
+          <button class="ghost" @click="qrModal = null">{{ tt("close") }}</button>
+          <button @click="copyQrLink">{{ tt("copyLink") }}</button>
         </div>
       </div>
     </div>
@@ -682,12 +946,12 @@ button.mini { padding: 3px 8px; font-size: 12px; }
 .dialog-btns .spacer { flex: 1; }
 .nodes-head { display: flex; align-items: center; padding: 4px 2px; font-size: 13px; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th, td { text-align: left; padding: 6px 8px; border-top: 1px solid var(--border); }
+th, td { text-align: start; padding: 6px 8px; border-top: 1px solid var(--border); }
 th { font-size: 11px; text-transform: uppercase; opacity: 0.7; }
 tr.current td { background: rgba(59,130,246,0.08); }
 .sel { cursor: pointer; width: 28px; text-align: center; color: var(--accent); }
 .remark { cursor: pointer; }
-.ops { white-space: nowrap; text-align: right; }
+.ops { white-space: nowrap; text-align: end; }
 .ops button { padding: 2px 8px; font-size: 12px; margin-left: 4px; }
 .bad { color: #ef4444; }
 code { font-size: 11px; }

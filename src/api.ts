@@ -155,6 +155,7 @@ export interface Settings {
   filter_ipv6?: boolean;
   auto_update_subscriptions?: boolean;
   auto_update_minutes?: number;
+  language?: string; // zh | en | ar
   selected_by_group: Record<number, string>;
 }
 
@@ -169,6 +170,7 @@ export interface SettingsPatch {
   filter_ipv6?: boolean;
   auto_update_subscriptions?: boolean;
   auto_update_minutes?: number;
+  language?: string;
 }
 
 export function settingsGet(): Promise<Settings> {

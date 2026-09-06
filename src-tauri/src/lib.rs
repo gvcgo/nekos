@@ -476,6 +476,7 @@ struct SettingsPatch {
     filter_ipv6: Option<bool>,
     auto_update_subscriptions: Option<bool>,
     auto_update_minutes: Option<u32>,
+    language: Option<String>,
 }
 
 #[tauri::command]
@@ -516,6 +517,9 @@ async fn settings_set(
         }
         if let Some(v) = patch.auto_update_minutes {
             s.auto_update_minutes = v.clamp(5, 60 * 24 * 7);
+        }
+        if let Some(v) = patch.language {
+            s.language = v;
         }
         db.save_settings(&s).map_err(|e| e.to_string())?;
         Ok(s)

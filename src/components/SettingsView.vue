@@ -6,6 +6,133 @@ import {
   settingsSet,
   type Settings,
 } from "../api";
+import { applyLocale, fmt, useDict, type Dict } from "../i18n";
+
+const zhL = {
+  title: "设置",
+  portLabel: "代理监听端口（127.0.0.1 mixed）",
+  modeLabel: "模式",
+  modeGlobal: "全局代理",
+  modeRule: "规则(绕过大陆)",
+  modeDirect: "直连（不走代理）",
+  logLevelLabel: "核心日志级别（下次启动内核生效）",
+  logError: "仅错误",
+  logWarn: "警告+错误",
+  logInfo: "信息（调试用）",
+  logDebug: "调试",
+  langLabel: "语言",
+  langZh: "中文",
+  langEn: "English",
+  langAr: "العربية",
+  closeTray: "关闭窗口时最小化到托盘",
+  filterTitle: "开启后，导入/更新订阅与粘贴导入时会丢弃 server 为 IPv6 地址的节点",
+  filterLabel: "过滤 IPv6 节点（立即保存，对之后导入/更新生效）",
+  autoTitle: "应用运行期间每分钟检查；距上次成功更新超过间隔的订阅自动抓取更新",
+  autoLabel: "自动更新订阅（应用运行期间）",
+  intervalLabel: "更新间隔",
+  intervalMin: "{n} 分钟",
+  intervalH1: "1 小时",
+  intervalH3: "3 小时",
+  intervalH6: "6 小时",
+  intervalH12: "12 小时",
+  intervalH24: "24 小时",
+  intervalSaved: "更新间隔设为 {n} 分钟",
+  autoOn: "自动更新已开启：应用运行期间后台定时抓取",
+  autoOff: "自动更新已关闭",
+  filterOn: "已开启 IPv6 过滤（对之后导入/更新生效）",
+  filterOff: "已关闭 IPv6 过滤",
+  proxyNote: "系统代理独立开关在「分组」页工具栏：内核运行中可随时开启/关闭，退出自动还原。",
+  saveBtn: "保存",
+  savingBtn: "保存中…",
+  saved: "已保存",
+  portRange: "端口需在 1-65535 之间",
+  coreVersionLabel: "核心版本",
+} as const;
+type DictKeys = keyof typeof zhL;
+const enL: Record<DictKeys, string> = {
+  title: "Settings",
+  portLabel: "Proxy listen port (127.0.0.1 mixed)",
+  modeLabel: "Mode",
+  modeGlobal: "Global proxy",
+  modeRule: "Rule (bypass mainland)",
+  modeDirect: "Direct (no proxy)",
+  logLevelLabel: "Core log level (applies on next core start)",
+  logError: "Errors only",
+  logWarn: "Warnings + errors",
+  logInfo: "Info (for debugging)",
+  logDebug: "Debug",
+  langLabel: "Language",
+  langZh: "中文",
+  langEn: "English",
+  langAr: "العربية",
+  closeTray: "Minimize to tray when closing window",
+  filterTitle: "When enabled, nodes whose server is an IPv6 address are dropped when importing/updating subscriptions or pasting import lists",
+  filterLabel: "Filter IPv6 nodes (saved immediately; applies to future imports/updates)",
+  autoTitle: "While the app runs, checks every minute; subscriptions whose last successful update is older than the interval are fetched automatically",
+  autoLabel: "Auto-update subscriptions (while the app runs)",
+  intervalLabel: "Update interval",
+  intervalMin: "{n} min",
+  intervalH1: "1 hour",
+  intervalH3: "3 hours",
+  intervalH6: "6 hours",
+  intervalH12: "12 hours",
+  intervalH24: "24 hours",
+  intervalSaved: "Update interval set to {n} minutes",
+  autoOn: "Auto-update enabled: subscriptions are fetched in the background while the app runs",
+  autoOff: "Auto-update disabled",
+  filterOn: "IPv6 filtering enabled (applies to future imports/updates)",
+  filterOff: "IPv6 filtering disabled",
+  proxyNote: "The separate system-proxy toggle lives in the toolbar of the Groups page: it can be turned on/off any time the core is running and resets automatically on exit.",
+  saveBtn: "Save",
+  savingBtn: "Saving…",
+  saved: "Saved",
+  portRange: "Port must be between 1 and 65535",
+  coreVersionLabel: "Core version",
+};
+const arL: Record<DictKeys, string> = {
+  title: "الإعدادات",
+  portLabel: "منفذ استماع الوكيل (127.0.0.1 mixed)",
+  modeLabel: "الوضع",
+  modeGlobal: "وكيل عام",
+  modeRule: "قواعد (تجاوز البر الرئيسي)",
+  modeDirect: "اتصال مباشر (بدون وكيل)",
+  logLevelLabel: "مستوى سجل النواة (يُطبَّق عند تشغيل النواة التالي)",
+  logError: "الأخطاء فقط",
+  logWarn: "التحذيرات والأخطاء",
+  logInfo: "معلومات (للتصحيح)",
+  logDebug: "تصحيح",
+  langLabel: "اللغة",
+  langZh: "中文",
+  langEn: "English",
+  langAr: "العربية",
+  closeTray: "تصغير إلى علبة النظام عند إغلاق النافذة",
+  filterTitle: "عند التفعيل، تُستبعد العُقد التي يكون عنوان خادمها IPv6 عند استيراد/تحديث الاشتراكات أو لصق قوائم الاستيراد",
+  filterLabel: "تصفية عُقد IPv6 (يُحفظ فورًا ويسري على الاستيراد/التحديث اللاحق)",
+  autoTitle: "أثناء تشغيل التطبيق يُفحص كل دقيقة؛ وتُحدَّث تلقائيًا الاشتراكات التي تجاوزت مدة آخر تحديث ناجح لها الفاصل الزمني",
+  autoLabel: "تحديث الاشتراكات تلقائيًا (أثناء تشغيل التطبيق)",
+  intervalLabel: "فاصل التحديث",
+  intervalMin: "{n} دقيقة",
+  intervalH1: "ساعة واحدة",
+  intervalH3: "3 ساعات",
+  intervalH6: "6 ساعات",
+  intervalH12: "12 ساعة",
+  intervalH24: "24 ساعة",
+  intervalSaved: "تم ضبط فاصل التحديث على {n} دقيقة",
+  autoOn: "تم تفعيل التحديث التلقائي: تُجلب الاشتراكات في الخلفية أثناء تشغيل التطبيق",
+  autoOff: "تم إيقاف التحديث التلقائي",
+  filterOn: "تم تفعيل تصفية IPv6 (يسري على الاستيراد/التحديث اللاحق)",
+  filterOff: "تم إيقاف تصفية IPv6",
+  proxyNote: "مفتاح وكيل النظام المستقل موجود في شريط أدوات صفحة «المجموعات»: يمكن تشغيله أو إيقافه في أي وقت أثناء تشغيل النواة، ويُستعاد تلقائيًا عند الخروج.",
+  saveBtn: "حفظ",
+  savingBtn: "جارٍ الحفظ…",
+  saved: "تم الحفظ",
+  portRange: "يجب أن يكون المنفذ بين 1 و65535",
+  coreVersionLabel: "إصدار النواة",
+};
+const dict = useDict({ zh: zhL as Dict, en: enL, ar: arL });
+function tt(k: DictKeys, p?: Record<string, string | number>): string {
+  return fmt(dict.value[k] as string, p);
+}
 
 const settings = ref<Settings | null>(null);
 const version = ref("…");
@@ -20,15 +147,24 @@ const closeToTray = ref(true);
 const filterIpv6 = ref(false);
 const autoUpdate = ref(false);
 const autoMinutes = ref(360);
-const minuteOptions = [
-  { m: 15, label: "15 分钟" },
-  { m: 30, label: "30 分钟" },
-  { m: 60, label: "1 小时" },
-  { m: 180, label: "3 小时" },
-  { m: 360, label: "6 小时" },
-  { m: 720, label: "12 小时" },
-  { m: 1440, label: "24 小时" },
-];
+const language = ref<"zh" | "en" | "ar">("zh");
+const minuteOptions = [15, 30, 60, 180, 360, 720, 1440];
+
+function intervalLabel(m: number): string {
+  if (m < 60) return tt("intervalMin", { n: m });
+  switch (m) {
+    case 60:
+      return tt("intervalH1");
+    case 180:
+      return tt("intervalH3");
+    case 360:
+      return tt("intervalH6");
+    case 720:
+      return tt("intervalH12");
+    default:
+      return tt("intervalH24");
+  }
+}
 
 onMounted(async () => {
   try {
@@ -40,6 +176,9 @@ onMounted(async () => {
     filterIpv6.value = settings.value.filter_ipv6 ?? false;
     autoUpdate.value = settings.value.auto_update_subscriptions ?? false;
     autoMinutes.value = settings.value.auto_update_minutes ?? 360;
+    const l = settings.value.language;
+    language.value = l === "en" || l === "ar" ? l : "zh";
+    applyLocale(language.value);
     version.value = await coreVersion();
   } catch (e) {
     err.value = String(e);
@@ -50,9 +189,7 @@ async function toggleAutoUpdate(on: boolean) {
   try {
     settings.value = await settingsSet({ auto_update_subscriptions: on });
     autoUpdate.value = on;
-    savedMsg.value = on
-      ? "自动更新已开启：应用运行期间后台定时抓取"
-      : "自动更新已关闭";
+    savedMsg.value = on ? tt("autoOn") : tt("autoOff");
   } catch (e) {
     err.value = String(e);
   }
@@ -62,7 +199,7 @@ async function setAutoMinutes(minutes: number) {
   try {
     settings.value = await settingsSet({ auto_update_minutes: minutes });
     autoMinutes.value = minutes;
-    savedMsg.value = `更新间隔设为 ${minutes} 分钟`;
+    savedMsg.value = tt("intervalSaved", { n: minutes });
   } catch (e) {
     err.value = String(e);
   }
@@ -72,7 +209,18 @@ async function toggleFilter(on: boolean) {
   try {
     settings.value = await settingsSet({ filter_ipv6: on });
     filterIpv6.value = on;
-    savedMsg.value = on ? "已开启 IPv6 过滤（对之后导入/更新生效）" : "已关闭 IPv6 过滤";
+    savedMsg.value = on ? tt("filterOn") : tt("filterOff");
+  } catch (e) {
+    err.value = String(e);
+  }
+}
+
+async function setLanguage(v: "zh" | "en" | "ar") {
+  try {
+    settings.value = await settingsSet({ language: v });
+    language.value = v;
+    applyLocale(v);
+    savedMsg.value = tt("saved");
   } catch (e) {
     err.value = String(e);
   }
@@ -85,7 +233,7 @@ async function save() {
   try {
     const port = parseInt(portStr.value, 10);
     if (!(port >= 1 && port <= 65535)) {
-      err.value = "端口需在 1-65535 之间";
+      err.value = tt("portRange");
       return;
     }
     settings.value = await settingsSet({
@@ -95,7 +243,7 @@ async function save() {
       close_to_tray: closeToTray.value,
       filter_ipv6: filterIpv6.value,
     });
-    savedMsg.value = "已保存";
+    savedMsg.value = tt("saved");
   } catch (e) {
     err.value = String(e);
   } finally {
@@ -106,55 +254,62 @@ async function save() {
 
 <template>
   <div class="settings-page">
-    <h1>设置</h1>
+    <h1>{{ tt("title") }}</h1>
     <div class="card">
-      <label>代理监听端口（127.0.0.1 mixed）</label>
+      <label>{{ tt("portLabel") }}</label>
       <input v-model="portStr" class="field" type="number" min="1" max="65535" />
 
-      <label>模式</label>
+      <label>{{ tt("modeLabel") }}</label>
       <select v-model="mode" class="field">
-        <option value="global">全局代理</option>
-        <option value="rule">规则(绕过大陆)</option>
-        <option value="direct">直连（不走代理）</option>
+        <option value="global">{{ tt("modeGlobal") }}</option>
+        <option value="rule">{{ tt("modeRule") }}</option>
+        <option value="direct">{{ tt("modeDirect") }}</option>
       </select>
 
-      <label>核心日志级别（下次启动内核生效）</label>
+      <label>{{ tt("logLevelLabel") }}</label>
       <select v-model="logLevel" class="field">
-        <option value="error">仅错误</option>
-        <option value="warn">警告+错误</option>
-        <option value="info">信息（调试用）</option>
-        <option value="debug">调试</option>
+        <option value="error">{{ tt("logError") }}</option>
+        <option value="warn">{{ tt("logWarn") }}</option>
+        <option value="info">{{ tt("logInfo") }}</option>
+        <option value="debug">{{ tt("logDebug") }}</option>
+      </select>
+
+      <label>{{ tt("langLabel") }}</label>
+      <select :value="language" class="field" @change="setLanguage(($event.target as HTMLSelectElement).value as 'zh' | 'en' | 'ar')">
+        <option value="zh">{{ tt("langZh") }}</option>
+        <option value="en">{{ tt("langEn") }}</option>
+        <option value="ar">{{ tt("langAr") }}</option>
       </select>
 
       <label class="check">
         <input v-model="closeToTray" type="checkbox" />
-        关闭窗口时最小化到托盘
+        {{ tt("closeTray") }}
       </label>
-      <label class="check" title="开启后，导入/更新订阅与粘贴导入时会丢弃 server 为 IPv6 地址的节点">
+      <label class="check" :title="tt('filterTitle')">
         <input type="checkbox" :checked="filterIpv6" @change="toggleFilter(($event.target as HTMLInputElement).checked)" />
-        过滤 IPv6 节点（立即保存，对之后导入/更新生效）
+        {{ tt("filterLabel") }}
       </label>
-      <label class="check" title="应用运行期间每分钟检查；距上次成功更新超过间隔的订阅自动抓取更新">
+      <label class="check" :title="tt('autoTitle')">
         <input type="checkbox" :checked="autoUpdate" @change="toggleAutoUpdate(($event.target as HTMLInputElement).checked)" />
-        自动更新订阅（应用运行期间）
+        {{ tt("autoLabel") }}
       </label>
       <div v-if="autoUpdate" class="auto-row">
-        <label>更新间隔</label>
+        <label>{{ tt("intervalLabel") }}</label>
         <select :value="autoMinutes" class="field sel-sm" @change="setAutoMinutes(Number(($event.target as HTMLSelectElement).value))">
-          <option v-for="opt in minuteOptions" :key="opt.m" :value="opt.m">{{ opt.label }}</option>
+          <option v-for="m in minuteOptions" :key="m" :value="m">{{ intervalLabel(m) }}</option>
         </select>
       </div>
-      <p class="note">系统代理独立开关在「分组」页工具栏：内核运行中可随时开启/关闭，退出自动还原。</p>
+      <p class="note">{{ tt("proxyNote") }}</p>
 
       <div class="row">
-        <button :disabled="saving" @click="save">{{ saving ? "保存中…" : "保存" }}</button>
+        <button :disabled="saving" @click="save">{{ saving ? tt("savingBtn") : tt("saveBtn") }}</button>
         <span v-if="savedMsg" class="ok">{{ savedMsg }}</span>
         <span v-if="err" class="err">{{ err }}</span>
       </div>
     </div>
 
     <div class="card about">
-      <span>核心版本</span>
+      <span>{{ tt("coreVersionLabel") }}</span>
       <code class="mono">{{ version }}</code>
     </div>
   </div>

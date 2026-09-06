@@ -1,10 +1,50 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from "vue";
-import { coreStatus, coreVersion, ping } from "./api";
+import { computed, onMounted, onUnmounted, ref } from "vue";
+import { coreStatus, coreVersion, ping, settingsGet } from "./api";
+import { applyLocale, fmt, useDict, type Dict } from "./i18n";
 import LogView from "./components/LogView.vue";
 import ServersView from "./components/ServersView.vue";
 import SubscriptionsView from "./components/SubscriptionsView.vue";
 import SettingsView from "./components/SettingsView.vue";
+
+const zhL = {
+  navServers: "分组",
+  navSubscriptions: "订阅",
+  navLogs: "日志",
+  navSettings: "设置",
+  coreRunning: "core 运行中",
+  coreStopped: "core 已停止",
+  stopped: "已停止",
+  running: "运行中",
+  runningProxyOn: "运行中 · 代理开",
+} as const;
+type DictKeys = keyof typeof zhL;
+const enL: Record<DictKeys, string> = {
+  navServers: "Groups",
+  navSubscriptions: "Subscriptions",
+  navLogs: "Logs",
+  navSettings: "Settings",
+  coreRunning: "core running",
+  coreStopped: "core stopped",
+  stopped: "Stopped",
+  running: "Running",
+  runningProxyOn: "Running · proxy on",
+};
+const arL: Record<DictKeys, string> = {
+  navServers: "المجموعات",
+  navSubscriptions: "الاشتراكات",
+  navLogs: "السجلات",
+  navSettings: "الإعدادات",
+  coreRunning: "النواة تعمل",
+  coreStopped: "النواة متوقفة",
+  stopped: "متوقف",
+  running: "يعمل",
+  runningProxyOn: "يعمل · الوكيل مفعّل",
+};
+const dict = useDict({ zh: zhL as Dict, en: enL, ar: arL });
+function tt(k: DictKeys, p?: Record<string, string | number>): string {
+  return fmt(dict.value[k] as string, p);
+}
 
 type Page = "servers" | "subscriptions" | "logs" | "settings";
 
@@ -14,12 +54,15 @@ const running = ref(false);
 const proxyOn = ref(false);
 const timer = ref<number | undefined>(undefined);
 
-const pages: { id: Page; label: string }[] = [
-  { id: "servers", label: "分组" },
-  { id: "subscriptions", label: "订阅" },
-  { id: "logs", label: "日志" },
-  { id: "settings", label: "设置" },
+const pageDefs: { id: Page; key: DictKeys }[] = [
+  { id: "servers", key: "navServers" },
+  { id: "subscriptions", key: "navSubscriptions" },
+  { id: "logs", key: "navLogs" },
+  { id: "settings", key: "navSettings" },
 ];
+const pages = computed<{ id: Page; label: string }[]>(() =>
+  pageDefs.map((p) => ({ id: p.id, label: tt(p.key) })),
+);
 
 async function pollStatus() {
   try {
@@ -32,6 +75,12 @@ async function pollStatus() {
 }
 
 onMounted(async () => {
+  try {
+    const s = await settingsGet();
+    applyLocale(s.language ?? "zh");
+  } catch {
+    /* ignore */
+  }
   try {
     version.value = (await coreVersion()).split("\n")[0] ?? "";
   } catch (e) {
@@ -66,8 +115,8 @@ onUnmounted(() => {
         </button>
       </nav>
       <div class="side-foot">
-        <span class="dot" :class="{ on: running }" :title="running ? 'core 运行中' : 'core 已停止'"></span>
-        <span class="run-state">{{ running ? `运行中${proxyOn ? " · 代理开" : ""}` : "已停止" }}</span>
+        <span class="dot" :class="{ on: running }" :title="running ? tt('coreRunning') : tt('coreStopped')"></span>
+        <span class="run-state">{{ running ? (proxyOn ? tt('runningProxyOn') : tt('running')) : tt('stopped') }}</span>
         <code>{{ version }}</code>
       </div>
     </aside>
@@ -117,7 +166,7 @@ nav {
 }
 
 nav button {
-  text-align: left;
+  text-align: start;
   padding: 8px 10px;
   border: 0;
   border-radius: 6px;

@@ -1,6 +1,49 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch } from "vue";
 import { logTail, type LogEntry } from "../api";
+import { fmt, useDict, type Dict } from "../i18n";
+
+const zhL = {
+  title: "日志",
+  hint: "sing-box core 输出（重启内核后新会话日志从头记录）",
+  fAll: "全部",
+  fError: "错误",
+  fWarn: "警告",
+  fInfo: "信息",
+  fDebug: "调试",
+  autoScroll: "自动滚动",
+  pause: "暂停",
+  empty: "暂无日志 — 启动代理后这里会实时显示 sing-box 输出。",
+} as const;
+type DictKeys = keyof typeof zhL;
+const enL: Record<DictKeys, string> = {
+  title: "Logs",
+  hint: "sing-box core output (logging restarts from the beginning after a core restart)",
+  fAll: "All",
+  fError: "Errors",
+  fWarn: "Warnings",
+  fInfo: "Info",
+  fDebug: "Debug",
+  autoScroll: "Auto-scroll",
+  pause: "Pause",
+  empty: "No logs yet — start the proxy and sing-box output will appear here in real time.",
+};
+const arL: Record<DictKeys, string> = {
+  title: "السجلات",
+  hint: "مخرجات نواة sing-box (يبدأ السجل من البداية بعد إعادة تشغيل النواة)",
+  fAll: "الكل",
+  fError: "الأخطاء",
+  fWarn: "التحذيرات",
+  fInfo: "المعلومات",
+  fDebug: "التصحيح",
+  autoScroll: "تمرير تلقائي",
+  pause: "إيقاف مؤقت",
+  empty: "لا توجد سجلات بعد — ابدأ تشغيل الوكيل وستظهر مخرجات sing-box هنا في الوقت الفعلي.",
+};
+const dict = useDict({ zh: zhL as Dict, en: enL, ar: arL });
+function tt(k: DictKeys, p?: Record<string, string | number>): string {
+  return fmt(dict.value[k] as string, p);
+}
 
 type LevelFilter = "all" | "error" | "warn" | "info" | "debug";
 
@@ -11,12 +54,12 @@ const paused = ref(false);
 const err = ref("");
 const area = ref<HTMLElement | null>(null);
 
-const FILTERS: { id: LevelFilter; label: string }[] = [
-  { id: "all", label: "全部" },
-  { id: "error", label: "错误" },
-  { id: "warn", label: "警告" },
-  { id: "info", label: "信息" },
-  { id: "debug", label: "调试" },
+const FILTERS: { id: LevelFilter; key: DictKeys }[] = [
+  { id: "all", key: "fAll" },
+  { id: "error", key: "fError" },
+  { id: "warn", key: "fWarn" },
+  { id: "info", key: "fInfo" },
+  { id: "debug", key: "fDebug" },
 ];
 
 const counts = ref<Record<string, number>>({});
@@ -67,23 +110,23 @@ onUnmounted(() => {
 <template>
   <div class="logs-page">
     <div class="toolbar">
-      <h1>日志</h1>
-      <span class="hint">sing-box core 输出（重启内核后新会话日志从头记录）</span>
+      <h1>{{ tt("title") }}</h1>
+      <span class="hint">{{ tt("hint") }}</span>
       <span class="spacer"></span>
       <button v-for="f in FILTERS" :key="f.id" class="chip-btn" :class="{ active: filter === f.id }" @click="filter = f.id">
-        {{ f.label }}<span v-if="f.id !== 'all' && counts[f.id]" class="cnt">{{ counts[f.id] }}</span>
+        {{ tt(f.key) }}<span v-if="f.id !== 'all' && counts[f.id]" class="cnt">{{ counts[f.id] }}</span>
       </button>
       <label class="toggle">
-        <input v-model="autoscroll" type="checkbox" /> 自动滚动
+        <input v-model="autoscroll" type="checkbox" /> {{ tt("autoScroll") }}
       </label>
       <label class="toggle">
-        <input v-model="paused" type="checkbox" /> 暂停
+        <input v-model="paused" type="checkbox" /> {{ tt("pause") }}
       </label>
     </div>
 
     <div ref="area" class="log-area">
       <div v-if="err" class="err">{{ err }}</div>
-      <div v-if="!entries.length && !err" class="empty">暂无日志 — 启动代理后这里会实时显示 sing-box 输出。</div>
+      <div v-if="!entries.length && !err" class="empty">{{ tt("empty") }}</div>
       <div v-for="(e, i) in visible()" :key="i" class="line" :class="levelClass(e.level)">
         <span class="lvl">{{ e.level }}</span>
         <span class="txt">{{ e.line }}</span>
