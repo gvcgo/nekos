@@ -5,6 +5,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,6 +15,8 @@ import (
 	"strconv"
 	"syscall"
 	"time"
+
+	qrcode "github.com/skip2/go-qrcode"
 
 	"nekos/core/internal/build"
 	"nekos/core/internal/link"
@@ -40,6 +43,8 @@ func main() {
 		err = cmdURLTest()
 	case "encode":
 		err = cmdEncode()
+	case "qr":
+		err = cmdQR()
 	case "version":
 		err = cmdVersion()
 	case "help", "-h", "--help":
@@ -76,6 +81,9 @@ usage:
   nekos-core encode               read {"remark": "...", "out": {...}} on
                                  stdin, print the share link for the node
                                  (anytls/trojan/vless/ss)
+  nekos-core qr                   same input as encode (plus optional
+                                 "size"), print base64 PNG QR code of the
+                                 share link
   nekos-core version             print version and embedded sing-box module
 `)
 }
@@ -238,6 +246,31 @@ func cmdEncode() error {
 		return err
 	}
 	fmt.Println(link)
+	return nil
+}
+
+func cmdQR() error {
+	var req struct {
+		Remark string          `json:"remark"`
+		Out    json.RawMessage `json:"out"`
+		Size   int             `json:"size"`
+	}
+	if err := json.NewDecoder(os.Stdin).Decode(&req); err != nil {
+		return fmt.Errorf("decode qr request: %w", err)
+	}
+	link, err := link.Encode(req.Remark, req.Out)
+	if err != nil {
+		return err
+	}
+	size := req.Size
+	if size < 128 || size > 2048 {
+		size = 300
+	}
+	png, err := qrcode.Encode(link, qrcode.Medium, size)
+	if err != nil {
+		return fmt.Errorf("qr encode: %w", err)
+	}
+	fmt.Print(base64.StdEncoding.EncodeToString(png))
 	return nil
 }
 

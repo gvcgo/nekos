@@ -644,6 +644,30 @@ async fn node_encode(
     .map_err(|e| e.to_string())?
 }
 
+/// QR data URL for one node's share link (server-generated PNG).
+#[tauri::command]
+async fn node_qr(
+    state: State<'_, AppState>,
+    group_id: i64,
+    node_id: String,
+) -> Result<String, String> {
+    let db = state.db.clone();
+    let ctl = state.ctl.clone();
+    let b64 = tauri::async_runtime::spawn_blocking(move || {
+        let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+        let node = db
+            .node(group_id, &node_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "节点不存在".to_string())?;
+        let out: serde_json::Value =
+            serde_json::from_str(&node.out).map_err(|e| format!("node json: {e}"))?;
+        ctl.qr(&node.remark, &out, 300)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(format!("data:image/png;base64,{b64}"))
+}
+
 /// Persisted latency results for a group (shown until re-tested).
 #[tauri::command]
 async fn latency_list(
@@ -1219,6 +1243,7 @@ pub fn run() {
             delete_node,
             copy_nodes,
             node_encode,
+            node_qr,
             settings_get,
             settings_set,
             set_node_current,

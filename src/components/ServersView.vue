@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
-import QRCode from "qrcode";
 import {
   coreStatus,
   coreStop,
@@ -15,6 +14,7 @@ import {
   measureNode,
   nodesList,
   nodeEncode,
+  nodeQr,
   proxySet,
   renameGroup,
   setNodeCurrent,
@@ -243,7 +243,7 @@ async function showNodeQr(nodeId: string, remark: string) {
   qrModal.value = null;
   try {
     const link = await nodeEncode(currentGroupId(), nodeId);
-    const dataUrl = await QRCode.toDataURL(link, { width: 300, margin: 1 });
+    const dataUrl = await nodeQr(currentGroupId(), nodeId);
     qrModal.value = { remark, link, dataUrl };
   } catch (e) {
     err.value = String(e);

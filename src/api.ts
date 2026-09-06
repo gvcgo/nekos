@@ -221,6 +221,11 @@ export function nodeEncode(groupId: number, nodeId: string): Promise<string> {
   return invoke<string>("node_encode", { groupId, nodeId });
 }
 
+/** QR PNG data URL for a node's share link (generated in core). */
+export function nodeQr(groupId: number, nodeId: string): Promise<string> {
+  return invoke<string>("node_qr", { groupId, nodeId });
+}
+
 export interface CoreStatusView {
   running: boolean;
   started_at?: string;

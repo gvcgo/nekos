@@ -199,6 +199,13 @@ impl CoreCtl {
         Ok(String::from_utf8_lossy(&out).trim().to_string())
     }
 
+    /// `nekos-core qr`: base64 PNG QR of a node's share link.
+    pub fn qr(&self, remark: &str, out: &serde_json::Value, size: u32) -> Result<String, String> {
+        let req = serde_json::json!({ "remark": remark, "out": out, "size": size });
+        let out = self.run(&["qr"], req.to_string().as_bytes())?;
+        Ok(String::from_utf8_lossy(&out).trim().to_string())
+    }
+
     /// `nekos-core parse` over arbitrary link/subscription text.
     pub fn parse(&self, text: &str) -> Result<ImportResult, String> {
         let out = self.run(&["parse"], text.as_bytes())?;
