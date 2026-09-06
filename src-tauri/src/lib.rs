@@ -105,16 +105,34 @@ impl AppState {
 
     /// Assemble the `core run` session JSON from DB + settings.
     /// rule_assets must be Some for rule mode (caller ensures downloads).
+    /// filter_v6 excludes IPv6-literal nodes from the session entirely.
     fn build_session(
         &self,
         group_id: i64,
         rule_assets: Option<(String, String)>,
+        filter_v6: bool,
     ) -> Result<(String, String), String> {
         let settings = self.settings();
         let db = self.db.lock().map_err(|_| "db lock poisoned".to_string())?;
         let nodes = db.list_nodes(group_id).map_err(|e| format!("db: {e}"))?;
         if nodes.is_empty() {
             return Err("当前分组没有节点".into());
+        }
+        let nodes: Vec<&db::Node> = nodes
+            .iter()
+            .filter(|n| {
+                if !filter_v6 {
+                    return true;
+                }
+                let out: serde_json::Value = match serde_json::from_str(&n.out) {
+                    Ok(v) => v,
+                    Err(_) => return true, // keep unparsable rather than drop silently
+                };
+                !is_ipv6_server(&out)
+            })
+            .collect();
+        if nodes.is_empty() {
+            return Err("开启「过滤 IPv6 节点」后该分组没有可用节点".into());
         }
         let selected = settings
             .selected_by_group
@@ -470,6 +488,7 @@ fn run_urltest(
     ctl: &CoreCtl,
     group_id: i64,
     ids: Option<&[String]>,
+    filter_v6: bool,
 ) -> Result<Vec<core::UrlTestRow>, String> {
     let pairs = {
         let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
@@ -478,9 +497,11 @@ fn run_urltest(
             .iter()
             .filter(|n| ids.map(|ids| ids.contains(&n.id)).unwrap_or(true))
             .filter_map(|n| {
-                serde_json::from_str::<serde_json::Value>(&n.out)
-                    .ok()
-                    .map(|out| (n.id.clone(), out))
+                let out: serde_json::Value = serde_json::from_str(&n.out).ok()?;
+                if filter_v6 && is_ipv6_server(&out) {
+                    return None;
+                }
+                Some((n.id.clone(), out))
             })
             .collect();
         if selected.is_empty() {
@@ -521,7 +542,7 @@ async fn measure_node(
     let ctl = state.ctl.clone();
     let ids = vec![node_id.clone()];
     let rows = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<core::UrlTestRow>, String> {
-        let rows = run_urltest(&db, &ctl, group_id, Some(&ids))?;
+        let rows = run_urltest(&db, &ctl, group_id, Some(&ids), false)?;
         persist_rows(&db, group_id, &rows);
         Ok(rows)
     })
@@ -543,8 +564,9 @@ async fn measure_batch(
 ) -> Result<Vec<BatchRow>, String> {
     let db = state.db.clone();
     let ctl = state.ctl.clone();
+    let filter_v6 = state.settings().filter_ipv6;
     let rows = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<core::UrlTestRow>, String> {
-        let rows = run_urltest(&db, &ctl, group_id, None)?;
+        let rows = run_urltest(&db, &ctl, group_id, None, filter_v6)?;
         persist_rows(&db, group_id, &rows);
         Ok(rows)
     })
@@ -793,7 +815,8 @@ async fn core_start(state: State<'_, AppState>) -> Result<RunResult, String> {
     } else {
         None
     };
-    let (session_json, selected) = state.build_session(group_id, rule_assets)?;
+    let (session_json, selected) =
+        state.build_session(group_id, rule_assets, settings.filter_ipv6)?;
 
     let ctl = state.ctl.clone();
     let runtime = state.runtime.clone();

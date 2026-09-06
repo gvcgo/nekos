@@ -39,9 +39,33 @@ const delayMap = ref<Record<string, MeasureView>>({});
 const testingAll = ref(false);
 const sortByDelay = ref(true);
 
+/** v6 heuristic mirror of the Rust filter (server without port). */
+function nodeIsV6(n: Node): boolean {
+  try {
+    const out = JSON.parse(n.out) as { server?: string };
+    const raw = out.server ?? "";
+    let host = raw.trim();
+    if (host.startsWith("[")) {
+      const end = host.indexOf("]");
+      if (end > 0) host = host.slice(1, end);
+    }
+    const pct = host.indexOf("%");
+    if (pct > 0) host = host.slice(0, pct);
+    if (!host.includes(":")) return false;
+    return !/^\d{1,3}(\.\d{1,3}){3}$/.test(host);
+  } catch {
+    return false;
+  }
+}
+
+const visibleNodes = computed(() => {
+  if (!(settings.value?.filter_ipv6 ?? false)) return nodes.value;
+  return nodes.value.filter((n) => !nodeIsV6(n));
+});
+
 /** latency ordering: measured asc; failed after measured; untested last. */
 const sortedNodes = computed(() => {
-  const list = nodes.value;
+  const list = visibleNodes.value;
   if (!sortByDelay.value) return list;
   const rank = (n: Node): [number, number] => {
     const m = delayMap.value[n.id];
@@ -286,7 +310,7 @@ onMounted(loadAll);
         <input type="checkbox" :checked="status.proxy_enabled" :disabled="!status.running" @change="toggleProxy(($event.target as HTMLInputElement).checked)" />
         系统代理
       </label>
-      <button :disabled="startBusy || !nodes.length" @click="toggleStart">
+      <button :disabled="startBusy || !visibleNodes.length" @click="toggleStart">
         {{ status.running ? "停止" : startBusy ? "启动中…" : "启动" }}
       </button>
     </div>
@@ -304,13 +328,16 @@ onMounted(loadAll);
 
     <section class="nodes">
       <div class="nodes-head">
-        <strong>节点（{{ nodes.length }}）</strong>
+        <strong>节点（{{ visibleNodes.length }}）</strong>
+        <span v-if="settings?.filter_ipv6 && visibleNodes.length < nodes.length" class="dim">
+          已隐藏 {{ nodes.length - visibleNodes.length }} 个 IPv6
+        </span>
         <span class="spacer"></span>
         <label class="sort-toggle" title="按延迟升序排列（失败与未测在后）">
           <input type="checkbox" :checked="sortByDelay" @change="toggleSort(($event.target as HTMLInputElement).checked)" />
           按延迟排序
         </label>
-        <button class="ghost" :disabled="testingAll || !nodes.length" @click="testAll">
+        <button class="ghost" :disabled="testingAll || !visibleNodes.length" @click="testAll">
           {{ testingAll ? "测速中…" : "全部测速" }}
         </button>
       </div>
@@ -332,6 +359,7 @@ onMounted(loadAll);
         </tbody>
       </table>
       <div v-if="!nodes.length" class="empty">当前分组没有节点 — 在上方粘贴导入，或在「订阅」页抓取保存。</div>
+      <div v-else-if="!visibleNodes.length" class="empty">该组节点全部为 IPv6（已按设置过滤）— 可在「设置」关闭过滤。</div>
     </section>
   </div>
 </template>
@@ -369,6 +397,7 @@ button.mini { padding: 3px 8px; font-size: 12px; }
 }
 .nodes { max-width: 860px; }
 .sort-toggle { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer; }
+.dim { opacity: 0.55; font-size: 11px; }
 .nodes-head { display: flex; align-items: center; padding: 4px 2px; font-size: 13px; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th, td { text-align: left; padding: 6px 8px; border-top: 1px solid var(--border); }
