@@ -216,6 +216,11 @@ export function copyNodes(
   return invoke<CopyView>("copy_nodes", { sourceGroupId, targetGroupId, nodeIds });
 }
 
+/** Share link for one node (copy link / QR share). */
+export function nodeEncode(groupId: number, nodeId: string): Promise<string> {
+  return invoke<string>("node_encode", { groupId, nodeId });
+}
+
 export interface CoreStatusView {
   running: boolean;
   started_at?: string;

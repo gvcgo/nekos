@@ -38,6 +38,8 @@ func main() {
 		err = cmdTest(os.Args[2:])
 	case "urltest":
 		err = cmdURLTest()
+	case "encode":
+		err = cmdEncode()
 	case "version":
 		err = cmdVersion()
 	case "help", "-h", "--help":
@@ -71,6 +73,9 @@ usage:
                                  on stdin; batch-probe all entries in one
                                  sing-box instance (urltest group, HTTP
                                  generate_204), print per-node delays
+  nekos-core encode               read {"remark": "...", "out": {...}} on
+                                 stdin, print the share link for the node
+                                 (anytls/trojan/vless/ss)
   nekos-core version             print version and embedded sing-box module
 `)
 }
@@ -217,6 +222,22 @@ func cmdURLTest() error {
 		return err
 	}
 	fmt.Println(string(out))
+	return nil
+}
+
+func cmdEncode() error {
+	var req struct {
+		Remark string          `json:"remark"`
+		Out    json.RawMessage `json:"out"`
+	}
+	if err := json.NewDecoder(os.Stdin).Decode(&req); err != nil {
+		return fmt.Errorf("decode encode request: %w", err)
+	}
+	link, err := link.Encode(req.Remark, req.Out)
+	if err != nil {
+		return err
+	}
+	fmt.Println(link)
 	return nil
 }
 

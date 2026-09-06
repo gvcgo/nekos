@@ -285,6 +285,34 @@ func wrapBase64(s string, width int) string {
 	return out + s
 }
 
+// Encode(Parse(uri)) must reproduce the same node (map-compare via json).
+func TestEncodeRoundTrip(t *testing.T) {
+	for _, uri := range []string{anytlsA, anytlsB, trojanA, vlessA} {
+		res := Parse(uri)
+		if len(res.Errors) != 0 || len(res.Nodes) != 1 {
+			t.Fatalf("parse %s: %+v", uri, res.Errors)
+		}
+		n := res.Nodes[0]
+		link, err := Encode(n.Remark, n.Out)
+		if err != nil {
+			t.Fatalf("encode %s: %v", n.OutboundType(), err)
+		}
+		back := Parse(link)
+		if len(back.Errors) != 0 || len(back.Nodes) != 1 {
+			t.Fatalf("re-parse %s failed: %+v", link, back.Errors)
+		}
+		m := back.Nodes[0]
+		if m.Remark != n.Remark {
+			t.Errorf("remark changed: %q != %q", m.Remark, n.Remark)
+		}
+		orig, _ := json.Marshal(n.Out)
+		round, _ := json.Marshal(m.Out)
+		if string(orig) != string(round) {
+			t.Errorf("outbound drift for %s:\n orig %s\n round %s", n.OutboundType(), orig, round)
+		}
+	}
+}
+
 func TestParseErrors(t *testing.T) {
 	res := Parse("vmess://abc@example.com:443")
 	if len(res.Nodes) != 0 || len(res.Errors) != 1 {

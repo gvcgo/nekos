@@ -621,6 +621,29 @@ async fn copy_nodes(
     .map_err(|e| e.to_string())?
 }
 
+/// Share link for one node ("copy link" / QR share).
+#[tauri::command]
+async fn node_encode(
+    state: State<'_, AppState>,
+    group_id: i64,
+    node_id: String,
+) -> Result<String, String> {
+    let db = state.db.clone();
+    let ctl = state.ctl.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+        let node = db
+            .node(group_id, &node_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "节点不存在".to_string())?;
+        let out: serde_json::Value =
+            serde_json::from_str(&node.out).map_err(|e| format!("node json: {e}"))?;
+        ctl.encode(&node.remark, &out)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Persisted latency results for a group (shown until re-tested).
 #[tauri::command]
 async fn latency_list(
@@ -1195,6 +1218,7 @@ pub fn run() {
             delete_group,
             delete_node,
             copy_nodes,
+            node_encode,
             settings_get,
             settings_set,
             set_node_current,

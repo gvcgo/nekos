@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
+import QRCode from "qrcode";
 import {
   coreStatus,
   coreStop,
@@ -13,6 +14,7 @@ import {
   measureBatch,
   measureNode,
   nodesList,
+  nodeEncode,
   proxySet,
   renameGroup,
   setNodeCurrent,
@@ -192,6 +194,63 @@ async function renameCurrentGroup() {
 }
 
 const switchMsg = ref("");
+const shareMsg = ref("");
+const qrModal = ref<{ remark: string; link: string; dataUrl: string } | null>(null);
+const qrBusy = ref(false);
+
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try {
+      ok = document.execCommand("copy");
+    } finally {
+      document.body.removeChild(ta);
+    }
+    return ok;
+  }
+}
+
+async function copyQrLink() {
+  if (!qrModal.value) return;
+  const ok = await copyText(qrModal.value.link);
+  shareMsg.value = ok ? "链接已复制到剪贴板" : "复制失败";
+}
+
+async function copyNodeLink(nodeId: string, remark: string) {
+  shareMsg.value = "";
+  err.value = "";
+  try {
+    const link = await nodeEncode(currentGroupId(), nodeId);
+    const ok = await copyText(link);
+    shareMsg.value = ok ? `已复制「${remark}」链接` : "复制失败（请使用 QR 弹窗内手动复制）";
+  } catch (e) {
+    err.value = String(e);
+  }
+}
+
+async function showNodeQr(nodeId: string, remark: string) {
+  qrBusy.value = true;
+  err.value = "";
+  qrModal.value = null;
+  try {
+    const link = await nodeEncode(currentGroupId(), nodeId);
+    const dataUrl = await QRCode.toDataURL(link, { width: 300, margin: 1 });
+    qrModal.value = { remark, link, dataUrl };
+  } catch (e) {
+    err.value = String(e);
+  } finally {
+    qrBusy.value = false;
+  }
+}
 
 async function toggleStart() {
   startBusy.value = true;
@@ -316,6 +375,7 @@ onMounted(loadAll);
     </div>
 
     <span v-if="switchMsg" class="ok">{{ switchMsg }}</span>
+    <span v-if="shareMsg" class="ok">{{ shareMsg }}</span>
     <span v-if="err" class="err">{{ err }}</span>
 
     <section class="import-card">
@@ -353,6 +413,8 @@ onMounted(loadAll);
             <td :class="delayMap[n.id]?.error ? 'bad' : ''">{{ delayText(n) }}</td>
             <td class="ops">
               <button class="ghost" :disabled="!!delayMap[n.id] && delayMap[n.id]!.delay_ms == null && !delayMap[n.id]!.error" @click="testNode(n.id)">测速</button>
+              <button class="ghost" :disabled="qrBusy" title="复制分享链接" @click="copyNodeLink(n.id, n.remark)">复制</button>
+              <button class="ghost" title="二维码分享" @click="showNodeQr(n.id, n.remark)">QR</button>
               <button class="ghost danger" @click="removeNode(n.id)">删除</button>
             </td>
           </tr>
@@ -361,6 +423,20 @@ onMounted(loadAll);
       <div v-if="!nodes.length" class="empty">当前分组没有节点 — 在上方粘贴导入，或在「订阅」页抓取保存。</div>
       <div v-else-if="!visibleNodes.length" class="empty">该组节点全部为 IPv6（已按设置过滤）— 可在「设置」关闭过滤。</div>
     </section>
+
+    <!-- QR share dialog -->
+    <div v-if="qrModal" class="dialog-mask" @click.self="qrModal = null">
+      <div class="dialog qr-dialog">
+        <h3>{{ qrModal.remark }}</h3>
+        <img :src="qrModal.dataUrl" alt="QR" class="qr-img" />
+        <div class="qr-link" :title="qrModal.link">{{ qrModal.link }}</div>
+        <div class="dialog-btns">
+          <span class="spacer"></span>
+          <button class="ghost" @click="qrModal = null">关闭</button>
+          <button @click="copyQrLink">复制链接</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -398,6 +474,23 @@ button.mini { padding: 3px 8px; font-size: 12px; }
 .nodes { max-width: 860px; }
 .sort-toggle { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer; }
 .dim { opacity: 0.55; font-size: 11px; }
+.dialog-mask {
+  position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45);
+  display: flex; align-items: center; justify-content: center; z-index: 50;
+}
+.dialog {
+  background: var(--bg, #f5f6f8); color: var(--fg, #1f2329);
+  border: 1px solid var(--border); border-radius: 12px; padding: 16px;
+  width: min(380px, 92vw); display: flex; flex-direction: column; align-items: center; gap: 10px;
+}
+.dialog h3 { margin: 0; font-size: 14px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qr-img { width: 300px; height: 300px; image-rendering: pixelated; background: #fff; padding: 6px; border-radius: 8px; }
+.qr-link {
+  width: 100%; font-family: ui-monospace, monospace; font-size: 10px; word-break: break-all;
+  border: 1px solid var(--border); border-radius: 6px; padding: 6px; max-height: 60px; overflow: auto;
+}
+.dialog-btns { display: flex; width: 100%; gap: 8px; justify-content: flex-end; }
+.dialog-btns .spacer { flex: 1; }
 .nodes-head { display: flex; align-items: center; padding: 4px 2px; font-size: 13px; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th, td { text-align: left; padding: 6px 8px; border-top: 1px solid var(--border); }
