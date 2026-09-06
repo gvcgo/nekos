@@ -157,10 +157,17 @@ impl AppState {
                 Some(serde_json::json!({ "id": n.id, "out": out }))
             })
             .collect();
-        let mode = match settings.mode.as_str() {
-            "direct" => "direct",
-            "rule" => "rule",
-            _ => "global",
+        let strat_kind: Option<String> = strat_override
+            .and_then(|sg| db.group(sg).ok().flatten().map(|g| g.kind));
+        let is_auto_strategy = strat_kind.as_deref() == Some("strategy");
+        let mode = if is_auto_strategy {
+            "strategy"
+        } else {
+            match settings.mode.as_str() {
+                "direct" => "direct",
+                "rule" => "rule",
+                _ => "global",
+            }
         };
         let mut session = serde_json::json!({
             "mode": mode,
@@ -169,7 +176,17 @@ impl AppState {
             "selected": selected,
             "log_level": settings.log_level,
         });
-        if mode == "rule" {
+        if is_auto_strategy {
+            // lowest-latency with automatic failover: the core's urltest
+            // group re-probes on its interval and re-pins the fastest
+            // healthy member when the current one fails.
+            session["strategy"] = serde_json::json!({
+                "url": "http://www.gstatic.com/generate_204",
+                "interval": "1m",
+                "tolerance": 50,
+            });
+            session["selected"] = serde_json::json!("auto");
+        } else if mode == "rule" {
             let (ip, site) = rule_assets
                 .ok_or_else(|| "规则模式需要 CN 规则集，请重试以触发下载".to_string())?;
             session["rule_assets"] = serde_json::json!({
@@ -1170,37 +1187,6 @@ fn core_status_raw(state: &AppState) -> CoreStatusView {
 async fn core_start(state: State<'_, AppState>) -> Result<RunResult, String> {
     let settings = state.settings();
     let group_id = settings.current_group_id;
-    let auto_strategy_target: Option<i64> = {
-        let db = state.db.lock().map_err(|_| "db lock poisoned".to_string())?;
-        let kind_of = |id: i64| -> Option<String> {
-            db.group(id).ok().flatten().map(|g| g.kind)
-        };
-        let selected = settings.selected_by_group.get(&group_id).cloned();
-        if let Some(sel) = selected {
-            if let Some(sgid) = sel.strip_prefix("strat:").and_then(|v| v.parse().ok()) {
-                if kind_of(sgid).as_deref() == Some("strategy") {
-                    Some(sgid)
-                } else {
-                    None
-                }
-            } else if kind_of(group_id).as_deref() == Some("strategy") {
-                Some(group_id)
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    };
-    if let Some(target) = auto_strategy_target {
-        let db = state.db.clone();
-        let ctl = state.ctl.clone();
-        // v2rayN policy-group: measure members without latency, pin fastest
-        let _ = tauri::async_runtime::spawn_blocking(move || autoselect_strategy(&db, &ctl, target))
-            .await
-            .map_err(|e| e.to_string())
-            .and_then(|r| r);
-    }
     let rule_assets = if settings.mode == "rule" {
         Some(state.ensure_rule_assets().await?)
     } else {

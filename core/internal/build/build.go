@@ -41,14 +41,22 @@ type RuleAssets struct {
 	GeositeCn string `json:"geosite_cn,omitempty"`
 }
 
+// StrategyConfig tunes the auto urltest group for strategy mode.
+type StrategyConfig struct {
+	URL       string `json:"url,omitempty"`
+	Interval  string `json:"interval,omitempty"`
+	Tolerance int    `json:"tolerance,omitempty"` // ms, default 50
+}
+
 // Session is the orchestrator->core contract for one running profile.
 type Session struct {
-	Mode       string        `json:"mode"` // global | direct | rule
-	Inbound    InboundConfig `json:"inbound"`
-	Entries    []Entry       `json:"entries"`
-	Selected   string        `json:"selected"` // entry id; empty => direct
-	LogLevel   string        `json:"log_level,omitempty"`
-	RuleAssets *RuleAssets   `json:"rule_assets,omitempty"`
+	Mode       string          `json:"mode"` // global | direct | rule | strategy
+	Inbound    InboundConfig   `json:"inbound"`
+	Entries    []Entry         `json:"entries"`
+	Selected   string          `json:"selected"` // entry id; empty => direct
+	LogLevel   string          `json:"log_level,omitempty"`
+	RuleAssets *RuleAssets     `json:"rule_assets,omitempty"`
+	Strategy   *StrategyConfig `json:"strategy,omitempty"`
 }
 
 // TagFor derives a stable, unique sing-box outbound tag from an entry id.
@@ -57,8 +65,9 @@ func TagFor(id string) string {
 }
 
 const (
-	tagDirect = "direct"
-	tagBlock  = "block"
+	tagDirect        = "direct"
+	tagBlock         = "block"
+	tagStrategyGroup = "strategy-group"
 )
 
 // Assemble converts a session into validated sing-box options JSON.
@@ -95,7 +104,7 @@ func AssembleJSON(sess *Session) (json.RawMessage, error) {
 
 	final := tagDirect
 	var selectedOut map[string]any
-	if sess.Selected != "" && sess.Mode != "direct" {
+	if sess.Selected != "" && sess.Mode != "direct" && sess.Mode != "strategy" {
 		target := findEntry(sess, sess.Selected)
 		if target == nil {
 			return nil, fmt.Errorf("selected entry %q not found", sess.Selected)
@@ -151,6 +160,49 @@ func AssembleJSON(sess *Session) (json.RawMessage, error) {
 				},
 			},
 		}
+	case "strategy":
+		if sess.Strategy == nil {
+			return nil, fmt.Errorf("strategy mode requires strategy config")
+		}
+		if len(sess.Entries) == 0 {
+			return nil, fmt.Errorf("strategy mode requires member entries")
+		}
+		// every member becomes an outbound; the urltest group keeps
+		// re-testing and pins the fastest healthy one, switching
+		// automatically when the current pick fails (v2rayN combo:
+		// lowest-latency with failover re-test).
+		var members []string
+		for _, e := range sess.Entries {
+			out := map[string]any{}
+			if err := json.Unmarshal(e.Out, &out); err != nil {
+				return nil, fmt.Errorf("entry %q: %w", e.ID, err)
+			}
+			tag := TagFor(e.ID)
+			out["tag"] = tag
+			cfg["outbounds"] = append(cfg["outbounds"].([]any), out)
+			members = append(members, tag)
+		}
+		url := sess.Strategy.URL
+		if url == "" {
+			url = "http://www.gstatic.com/generate_204"
+		}
+		interval := sess.Strategy.Interval
+		if interval == "" {
+			interval = "1m"
+		}
+		tolerance := sess.Strategy.Tolerance
+		if tolerance <= 0 {
+			tolerance = 50
+		}
+		cfg["outbounds"] = append(cfg["outbounds"].([]any), map[string]any{
+			"type":      "urltest",
+			"tag":       tagStrategyGroup,
+			"outbounds": members,
+			"url":       url,
+			"interval":  interval,
+			"tolerance": tolerance,
+		})
+		final = tagStrategyGroup
 	default:
 		return nil, fmt.Errorf("unknown mode %q", sess.Mode)
 	}
