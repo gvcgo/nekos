@@ -7,6 +7,7 @@ import {
   type Settings,
 } from "../api";
 import { applyLocale, fmt, useDict, type Dict } from "../i18n";
+import RouteSettings from "./RouteSettings.vue";
 
 const zhL = {
   title: "设置",
@@ -264,6 +265,8 @@ async function save() {
         <span v-if="err" class="err">{{ err }}</span>
       </div>
     </div>
+
+    <RouteSettings />
 
     <div class="card about">
       <span>{{ tt("coreVersionLabel") }}</span>

@@ -142,6 +142,48 @@ export function importToGroup(groupId: number, text: string): Promise<ImportResu
   return invoke<ImportResult>("import_to_group", { groupId, text });
 }
 
+// ---- route profiles (rule-mode custom routing) ---------------------------
+
+export interface RouteProfile {
+  id: number;
+  name: string;
+  /** Final (default) outbound: proxy | direct | block. */
+  final_out: string;
+  /** Ordered JSON array of sing-box route rule objects. */
+  rules_json: string;
+  updated_at?: string;
+}
+
+export function routeProfilesList(): Promise<RouteProfile[]> {
+  return invoke<RouteProfile[]>("route_profiles_list");
+}
+
+export function routeProfileCreate(
+  name: string,
+  finalOut: string,
+  rulesJson: string,
+): Promise<RouteProfile> {
+  return invoke<RouteProfile>("route_profile_create", { name, finalOut, rulesJson });
+}
+
+export function routeProfileUpdate(
+  profileId: number,
+  name: string,
+  finalOut: string,
+  rulesJson: string,
+): Promise<RouteProfile> {
+  return invoke<RouteProfile>("route_profile_update", { profileId, name, finalOut, rulesJson });
+}
+
+export function routeProfileDelete(profileId: number): Promise<void> {
+  return invoke<void>("route_profile_delete", { profileId });
+}
+
+/** Activate a custom profile; pass null to fall back to the built-in profile. */
+export function routeProfileSetActive(profileId: number | null): Promise<void> {
+  return invoke<void>("route_profile_set_active", { profileId });
+}
+
 // ---- settings / selection -----------------------------------------------
 
 export interface Settings {
@@ -157,6 +199,8 @@ export interface Settings {
   auto_update_minutes?: number;
   language?: string; // zh | en
   selected_by_group: Record<number, string>;
+  /** Active custom routing profile id; null/absent => built-in bypass-mainland. */
+  route_profile_id?: number | null;
 }
 
 export interface SettingsPatch {

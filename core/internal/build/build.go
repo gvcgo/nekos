@@ -41,6 +41,17 @@ type RuleAssets struct {
 	GeositeCn string `json:"geosite_cn,omitempty"`
 }
 
+// RouteConfig is a user-defined route used by rule mode: an ordered list of
+// sing-box-native route rules plus a final (default) outbound. Rules are
+// stored/transferred verbatim with semantic outbound names — "proxy",
+// "direct" or "block" — which assembly rewrites to concrete outbound tags.
+// rule_set entries may only reference the CN rule sets carried in
+// RuleAssets (geoip-cn / geosite-cn).
+type RouteConfig struct {
+	Final string            `json:"final"` // proxy | direct | block
+	Rules []json.RawMessage `json:"rules"` // sing-box route rule JSON
+}
+
 // StrategyConfig tunes the auto urltest group for strategy mode.
 type StrategyConfig struct {
 	URL       string `json:"url,omitempty"`
@@ -57,6 +68,7 @@ type Session struct {
 	LogLevel   string          `json:"log_level,omitempty"`
 	RuleAssets *RuleAssets     `json:"rule_assets,omitempty"`
 	Strategy   *StrategyConfig `json:"strategy,omitempty"`
+	Route      *RouteConfig    `json:"route,omitempty"` // custom route (rule mode)
 }
 
 // TagFor derives a stable, unique sing-box outbound tag from an entry id.
@@ -132,33 +144,45 @@ func AssembleJSON(sess *Session) (json.RawMessage, error) {
 			return nil, fmt.Errorf("rule mode requires a selected node")
 		}
 		cfg["outbounds"] = append(cfg["outbounds"].([]any), selectedOut)
-		final = TagFor(sess.Selected)
-		// Bypass-mainland: CN ip/domain go direct; everything else -> node.
-		cfg["route"] = map[string]any{
-			"final": final,
-			"rules": []any{
-				map[string]any{
-					"rule_set": []string{"geoip-cn", "geosite-cn"},
-					"outbound": tagDirect,
+		if sess.Route == nil {
+			// Built-in bypass-mainland profile (default; unchanged behaviour).
+			final = TagFor(sess.Selected)
+			cfg["route"] = map[string]any{
+				"final": final,
+				"rules": []any{
+					map[string]any{
+						"rule_set": []string{"geoip-cn", "geosite-cn"},
+						"outbound": tagDirect,
+					},
 				},
-			},
-			"rule_set": []any{
-				map[string]any{"type": "local", "tag": "geoip-cn", "format": "binary", "path": sess.RuleAssets.GeoipCn},
-				map[string]any{"type": "local", "tag": "geosite-cn", "format": "binary", "path": sess.RuleAssets.GeositeCn},
-			},
-		}
-		// DNS: CN domains resolve via the system (direct path); anything
-		// unmatched is left as a hostname for the proxy exit to resolve.
-		cfg["dns"] = map[string]any{
-			"servers": []any{
-				map[string]any{"type": "local", "tag": "dns-direct"},
-			},
-			"rules": []any{
-				map[string]any{
-					"rule_set": []string{"geosite-cn"},
-					"server":   "dns-direct",
+				"rule_set": []any{
+					map[string]any{"type": "local", "tag": "geoip-cn", "format": "binary", "path": sess.RuleAssets.GeoipCn},
+					map[string]any{"type": "local", "tag": "geosite-cn", "format": "binary", "path": sess.RuleAssets.GeositeCn},
 				},
-			},
+			}
+			// DNS: CN domains resolve via the system (direct path); anything
+			// unmatched is left as a hostname for the proxy exit to resolve.
+			cfg["dns"] = map[string]any{
+				"servers": []any{
+					map[string]any{"type": "local", "tag": "dns-direct"},
+				},
+				"rules": []any{
+					map[string]any{
+						"rule_set": []string{"geosite-cn"},
+						"server":   "dns-direct",
+					},
+				},
+			}
+		} else {
+			route, dns, err := assembleUserRoute(sess.Route, sess.RuleAssets, TagFor(sess.Selected))
+			if err != nil {
+				return nil, err
+			}
+			cfg["route"] = route
+			if dns != nil {
+				cfg["dns"] = dns
+			}
+			final = route["final"].(string)
 		}
 	case "strategy":
 		if sess.Strategy == nil {
@@ -236,4 +260,97 @@ func findEntry(sess *Session, id string) *Entry {
 		}
 	}
 	return nil
+}
+
+// assembleUserRoute converts a user RouteConfig into sing-box route (+ DNS)
+// maps. Semantic outbound names ("proxy"/"direct"/"block") are rewritten to
+// concrete tags; rule_set references must be the bundled CN rule sets.
+func assembleUserRoute(route *RouteConfig, assets *RuleAssets, proxyTag string) (map[string]any, map[string]any, error) {
+	resolveOut := func(sem string) (string, error) {
+		switch sem {
+		case "", "proxy":
+			return proxyTag, nil
+		case "direct":
+			return tagDirect, nil
+		case "block":
+			return tagBlock, nil
+		default:
+			return "", fmt.Errorf("unsupported route outbound %q", sem)
+		}
+	}
+	final, err := resolveOut(route.Final)
+	if err != nil {
+		return nil, nil, err
+	}
+	seenSets := map[string]bool{}
+	rules := make([]any, 0, len(route.Rules))
+	for i, raw := range route.Rules {
+		if len(raw) == 0 {
+			continue
+		}
+		var rule map[string]any
+		if err := json.Unmarshal(raw, &rule); err != nil {
+			return nil, nil, fmt.Errorf("route rule %d: %w", i, err)
+		}
+		if rule == nil {
+			continue // JSON null
+		}
+		out, _ := rule["outbound"].(string)
+		tag, err := resolveOut(out)
+		if err != nil {
+			return nil, nil, fmt.Errorf("route rule %d: %w", i, err)
+		}
+		rule["outbound"] = tag
+		switch v := rule["rule_set"].(type) {
+		case string:
+			if err := checkRuleSet(v, seenSets); err != nil {
+				return nil, nil, fmt.Errorf("route rule %d: %w", i, err)
+			}
+		case []any:
+			for _, e := range v {
+				name, ok := e.(string)
+				if !ok {
+					return nil, nil, fmt.Errorf("route rule %d: invalid rule_set entry", i)
+				}
+				if err := checkRuleSet(name, seenSets); err != nil {
+					return nil, nil, fmt.Errorf("route rule %d: %w", i, err)
+				}
+			}
+		}
+		rules = append(rules, rule)
+	}
+	routeMap := map[string]any{"final": final}
+	if len(rules) > 0 {
+		routeMap["rules"] = rules
+	}
+	if len(seenSets) > 0 {
+		defs := []any{}
+		if seenSets["geoip-cn"] {
+			defs = append(defs, map[string]any{"type": "local", "tag": "geoip-cn", "format": "binary", "path": assets.GeoipCn})
+		}
+		if seenSets["geosite-cn"] {
+			defs = append(defs, map[string]any{"type": "local", "tag": "geosite-cn", "format": "binary", "path": assets.GeositeCn})
+		}
+		routeMap["rule_set"] = defs
+	}
+	var dns map[string]any
+	if seenSets["geosite-cn"] {
+		// CN domains resolve via the system (direct path) so they can match
+		// direct rules; everything else stays a hostname for the proxy exit.
+		dns = map[string]any{
+			"servers": []any{map[string]any{"type": "local", "tag": "dns-direct"}},
+			"rules":   []any{map[string]any{"rule_set": []string{"geosite-cn"}, "server": "dns-direct"}},
+		}
+	}
+	return routeMap, dns, nil
+}
+
+func checkRuleSet(name string, seen map[string]bool) error {
+	switch name {
+	case "geoip-cn", "geosite-cn":
+		seen[name] = true
+		return nil
+	default:
+		return fmt.Errorf("unknown rule_set %q (only geoip-cn/geosite-cn are bundled)", name)
+	}
 }

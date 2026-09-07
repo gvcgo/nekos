@@ -193,6 +193,19 @@ impl AppState {
                 "geoip_cn": ip,
                 "geosite_cn": site,
             });
+            // A custom routing profile (rules + final outbound) overrides the
+            // built-in bypass-mainland rules. A stale/deleted profile id
+            // silently falls back to the built-in profile.
+            if let Some(pid) = settings.route_profile_id {
+                if let Some(p) = db.get_route_profile(pid).map_err(|e| format!("db: {e}"))? {
+                    let rules: serde_json::Value = serde_json::from_str(&p.rules_json)
+                        .map_err(|_| "路由档案规则数据损坏".to_string())?;
+                    session["route"] = serde_json::json!({
+                        "final": p.final_out,
+                        "rules": rules,
+                    });
+                }
+            }
         }
         let selected_id = session["selected"].as_str().unwrap_or_default().to_string();
         Ok((
@@ -457,6 +470,126 @@ async fn delete_node(
     .await
     .map_err(|e| e.to_string())??;
     Ok(())
+}
+
+// ---- route profiles (rule-mode custom routing) ---------------------------
+
+fn route_final_valid(v: &str) -> bool {
+    matches!(v, "proxy" | "direct" | "block")
+}
+
+fn route_rules_valid(s: &str) -> bool {
+    serde_json::from_str::<Vec<serde_json::Value>>(s)
+        .map(|rules| rules.iter().all(|r| r.is_object()))
+        .unwrap_or(false)
+}
+
+#[tauri::command]
+fn route_profiles_list(state: State<'_, AppState>) -> Result<Vec<db::RouteProfile>, String> {
+    with_db(&state, |db| db.list_route_profiles().map_err(|e| e.to_string()))
+}
+
+#[tauri::command]
+async fn route_profile_create(
+    state: State<'_, AppState>,
+    name: String,
+    final_out: String,
+    rules_json: String,
+) -> Result<db::RouteProfile, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("请输入路由档案名称".into());
+    }
+    if !route_final_valid(&final_out) {
+        return Err("兜底出口必须是 proxy / direct / block".into());
+    }
+    if !route_rules_valid(&rules_json) {
+        return Err("规则内容必须是 sing-box 路由规则对象数组".into());
+    }
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<db::RouteProfile, String> {
+        let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+        let id = db
+            .create_route_profile(&name, &final_out, &rules_json)
+            .map_err(|e| e.to_string())?;
+        db.get_route_profile(id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "路由档案不存在".into())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn route_profile_update(
+    state: State<'_, AppState>,
+    profile_id: i64,
+    name: String,
+    final_out: String,
+    rules_json: String,
+) -> Result<db::RouteProfile, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("请输入路由档案名称".into());
+    }
+    if !route_final_valid(&final_out) {
+        return Err("兜底出口必须是 proxy / direct / block".into());
+    }
+    if !route_rules_valid(&rules_json) {
+        return Err("规则内容必须是 sing-box 路由规则对象数组".into());
+    }
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<db::RouteProfile, String> {
+        let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+        db.update_route_profile(profile_id, &name, &final_out, &rules_json)
+            .map_err(|e| e.to_string())?;
+        db.get_route_profile(profile_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "路由档案不存在".into())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn route_profile_delete(state: State<'_, AppState>, profile_id: i64) -> Result<(), String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+        db.delete_route_profile(profile_id).map_err(|e| e.to_string())?;
+        let mut s = db.load_settings();
+        if s.route_profile_id == Some(profile_id) {
+            // deleting the active profile falls back to the built-in one
+            s.route_profile_id = None;
+            db.save_settings(&s).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Activate a custom routing profile (Some(id)) or fall back to the built-in
+/// bypass-mainland profile (None).
+#[tauri::command]
+async fn route_profile_set_active(
+    state: State<'_, AppState>,
+    profile_id: Option<i64>,
+) -> Result<(), String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+        if let Some(id) = profile_id {
+            if db.get_route_profile(id).map_err(|e| e.to_string())?.is_none() {
+                return Err("路由档案不存在".into());
+            }
+        }
+        let mut s = db.load_settings();
+        s.route_profile_id = profile_id;
+        db.save_settings(&s).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -1396,6 +1529,11 @@ pub fn run() {
             rename_group,
             delete_group,
             delete_node,
+            route_profiles_list,
+            route_profile_create,
+            route_profile_update,
+            route_profile_delete,
+            route_profile_set_active,
             copy_nodes,
             node_encode,
             node_qr,

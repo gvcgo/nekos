@@ -48,6 +48,19 @@ pub struct Node {
     pub out: String,
 }
 
+/// User-defined routing profile used by rule mode. Rules are stored as an
+/// ordered sing-box route-rule JSON array (never re-implemented on this
+/// side); final_out is the semantic default outbound: proxy | direct | block.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct RouteProfile {
+    pub id: i64,
+    pub name: String,
+    pub final_out: String,
+    pub rules_json: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+}
+
 #[derive(Deserialize, Clone)]
 pub struct NewNode {
     pub id: String,
@@ -97,6 +110,10 @@ pub struct Settings {
     /// UI language: zh | en
     #[serde(default = "default_language")]
     pub language: String,
+    /// Active routing profile id used by rule mode; None => built-in
+    /// bypass-mainland profile.
+    #[serde(default)]
+    pub route_profile_id: Option<i64>,
     pub selected_by_group: std::collections::HashMap<i64, String>,
 }
 
@@ -114,6 +131,7 @@ impl Default for Settings {
             auto_update_subscriptions: false,
             auto_update_minutes: default_auto_minutes(),
             language: default_language(),
+            route_profile_id: None,
             selected_by_group: Default::default(),
         }
     }
@@ -179,7 +197,14 @@ impl Db {
                 host_group  INTEGER NOT NULL,
                 PRIMARY KEY (strategy_id, host_group)
             );
-            INSERT OR IGNORE INTO groups (id, name) VALUES (1, '默认分组');",
+            INSERT OR IGNORE INTO groups (id, name) VALUES (1, '默认分组');
+            CREATE TABLE IF NOT EXISTS route_profiles (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                name       TEXT NOT NULL,
+                final_out  TEXT NOT NULL DEFAULT 'proxy',
+                rules_json TEXT NOT NULL DEFAULT '[]',
+                updated_at TEXT
+            );",
         )?;
         self.ensure_column("groups", "user_agent", "TEXT")?;
         self.ensure_column("groups", "extra_headers", "TEXT")?;
@@ -421,6 +446,73 @@ impl Db {
              WHERE id = ?1",
             params![id, sub_url, user_agent, extra_headers, userinfo],
         )?;
+        Ok(())
+    }
+
+    // ---- route profiles ----
+
+    pub fn list_route_profiles(&self) -> rusqlite::Result<Vec<RouteProfile>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, final_out, rules_json, updated_at FROM route_profiles ORDER BY id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(RouteProfile {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                final_out: row.get(2)?,
+                rules_json: row.get(3)?,
+                updated_at: row.get(4)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn get_route_profile(&self, id: i64) -> rusqlite::Result<Option<RouteProfile>> {
+        self.conn
+            .query_row(
+                "SELECT id, name, final_out, rules_json, updated_at FROM route_profiles WHERE id = ?1",
+                params![id],
+                |row| {
+                    Ok(RouteProfile {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        final_out: row.get(2)?,
+                        rules_json: row.get(3)?,
+                        updated_at: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
+    }
+
+    pub fn create_route_profile(&self, name: &str, final_out: &str, rules_json: &str) -> rusqlite::Result<i64> {
+        self.conn.execute(
+            "INSERT INTO route_profiles (name, final_out, rules_json, updated_at)
+             VALUES (?1, ?2, ?3, strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime'))",
+            params![name, final_out, rules_json],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn update_route_profile(
+        &self,
+        id: i64,
+        name: &str,
+        final_out: &str,
+        rules_json: &str,
+    ) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE route_profiles SET name = ?2, final_out = ?3, rules_json = ?4,
+             updated_at = strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime')
+             WHERE id = ?1",
+            params![id, name, final_out, rules_json],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_route_profile(&self, id: i64) -> rusqlite::Result<()> {
+        self.conn
+            .execute("DELETE FROM route_profiles WHERE id = ?1", params![id])?;
         Ok(())
     }
 
@@ -738,5 +830,38 @@ mod tests {
         assert_eq!(s2.port, 10808);
         assert_eq!(s2.mode, "direct");
         assert_eq!(s2.selected_by_group.get(&1), Some(&"node-x".to_string()));
+    }
+
+    #[test]
+    fn route_profiles_roundtrip() {
+        let db = open_tmp();
+        // no profiles yet; the built-in bypass-mainland profile is implicit
+        assert!(db.list_route_profiles().unwrap().is_empty());
+
+        let rules = r#"[{"domain_suffix":["example.com"],"outbound":"block"}]"#;
+        let id = db.create_route_profile("自定义", "proxy", rules).unwrap();
+        let got = db.get_route_profile(id).unwrap().unwrap();
+        assert_eq!(got.name, "自定义");
+        assert_eq!(got.final_out, "proxy");
+        assert_eq!(got.rules_json, rules);
+
+        let updated = r#"[{"rule_set":["geosite-cn"],"outbound":"direct"}]"#;
+        db.update_route_profile(id, "自定义2", "direct", updated).unwrap();
+        let got = db.get_route_profile(id).unwrap().unwrap();
+        assert_eq!(got.name, "自定义2");
+        assert_eq!(got.final_out, "direct");
+        assert_eq!(got.rules_json, updated);
+        assert_eq!(db.list_route_profiles().unwrap().len(), 1);
+
+        db.delete_route_profile(id).unwrap();
+        assert!(db.get_route_profile(id).unwrap().is_none());
+        assert!(db.list_route_profiles().unwrap().is_empty());
+
+        // route_profile_id survives the settings blob roundtrip (defaults None)
+        let mut s = db.load_settings();
+        assert_eq!(s.route_profile_id, None);
+        s.route_profile_id = Some(id);
+        db.save_settings(&s).unwrap();
+        assert_eq!(db.load_settings().route_profile_id, Some(id));
     }
 }

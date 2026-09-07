@@ -109,6 +109,19 @@ builder 无需维护映射表。tag 由编排层按 entry.id 派生（`out-<id>`
   实测 sing-box 的 `max_early_data` header 式会被 v2rayN 系服务端拒绝（EOF）；见
   core/internal/link/transport.go 注释。
 
+### 5.1 路由档案（rule 模式自定义分流，2026-09-07）
+
+同 §5 哲学：路由规则也是 sing-box 原生 JSON，Rust 只存不改。`settings.route_profile_id`
+指向自定义档案，缺省/删除回退**内置绕过大陆**（零迁移）。
+
+- 落库：`route_profiles(id, name, final_out, rules_json, updated_at)`；`rules_json` 为有序
+  sing-box route rule 对象数组，`final_out` 用语义名 proxy|direct|block。
+- 契约：session 增 `route`（`{final, rules[]}`）；core 组装时把语义出口改写为具体 tag
+  （proxy→`out-<selected>`），`rule_set` 仅允许内置 `geoip-cn`/`geosite-cn`（资产路径仍由
+  编排层经 `rule_assets` 下发），未知出口/规则集在启动时 fail-fast。
+- 规则命中引用 `geosite-cn` 时按内置语义补 DNS 块（CN 域名本地解析）；否则不引入 DNS 块。
+- 首期边界：无远程规则集订阅/DNS-Object/嗅探/进程级规则（见 roadmap P1/P2）。
+
 ## 6. 控制面协议（编排层 ↔ core）
 
 ### 6.1 通道
