@@ -33,19 +33,3 @@ body {
   }
 }
 
-/* RTL niceties: mirror the sidebar to the right side and keep text start-aligned */
-[dir="rtl"] .shell .side {
-  border-right: none;
-  border-left: 1px solid var(--border);
-}
-
-[dir="rtl"] .shell .side nav button {
-  text-align: start;
-}
-
-@media (prefers-color-scheme: dark) {
-  [dir="rtl"] .shell .side {
-    border-left-color: var(--border-dark);
-  }
-}
-

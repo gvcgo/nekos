@@ -30,18 +30,7 @@ const enL: Record<DictKeys, string> = {
   running: "Running",
   runningProxyOn: "Running · proxy on",
 };
-const arL: Record<DictKeys, string> = {
-  navServers: "المجموعات",
-  navSubscriptions: "الاشتراكات",
-  navLogs: "السجلات",
-  navSettings: "الإعدادات",
-  coreRunning: "النواة تعمل",
-  coreStopped: "النواة متوقفة",
-  stopped: "متوقف",
-  running: "يعمل",
-  runningProxyOn: "يعمل · الوكيل مفعّل",
-};
-const dict = useDict({ zh: zhL as Dict, en: enL, ar: arL });
+const dict = useDict({ zh: zhL as Dict, en: enL });
 function tt(k: DictKeys, p?: Record<string, string | number>): string {
   return fmt(dict.value[k] as string, p);
 }

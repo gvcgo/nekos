@@ -200,92 +200,7 @@ const enL: Record<DictKeys, string> = {
   latFail: "Failed",
   latMs: "{n} ms",
 };
-const arL: Record<DictKeys, string> = {
-  titleGroups: "المجموعات",
-  manageGroups: "إدارة المجموعات",
-  addGroup: "＋ مجموعة جديدة",
-  addStrategy: "＋ إستراتيجية",
-  strategyTip:
-    "اختيار أسرع مجموعة تلقائيًا حسب زمن استجابة أعضائها (مجموعة إستراتيجية v2rayN)",
-  renameBtn: "✎ إعادة التسمية",
-  deleteBtn: "✕ حذف",
-  deleteGroupTip: "حذف المجموعة (بما تحويه من عقد)",
-  chipRunOn: "يعمل · وكيل النظام مفعّل",
-  chipRunOff: "يعمل · وكيل النظام معطّل",
-  chipStopped: "متوقف",
-  modeTip: "نمط التوجيه",
-  modeGlobal: "وكيل شامل",
-  modeRule: "قواعد (تجاوز البر الرئيسي للصين)",
-  modeDirect: "مباشر",
-  proxyTip: "يمكن تشغيل وكيل النظام أو إيقافه في أي وقت أثناء تشغيل النواة",
-  sysProxy: "وكيل النظام",
-  start: "تشغيل",
-  stop: "إيقاف",
-  starting: "جارٍ التشغيل…",
-  importPlaceholder:
-    "الصق روابط المشاركة / محتوى الاشتراكات (base64 أو Clash أو JSON) لاستيرادها إلى المجموعة الحالية",
-  importBtn: "استيراد إلى المجموعة الحالية",
-  importing: "جارٍ الاستيراد…",
-  importOk: "تم استيراد {n} من العقد، مع {e} من الأخطاء",
-  nodeCount: "العقد ({n})",
-  hiddenV6: "تم إخفاء {n} من عقد IPv6",
-  sortTip: "الترتيب حسب زمن الاستجابة تصاعديًا (الفاشلة وغير المختبرة في النهاية)",
-  sortByDelay: "الترتيب حسب زمن الاستجابة",
-  testAll: "قياس الكل",
-  testing: "جارٍ القياس…",
-  thType: "النوع",
-  thRemark: "الملاحظة",
-  thLatency: "زمن الاستجابة",
-  thOps: "إجراءات",
-  test: "قياس",
-  copy: "نسخ",
-  copyTip: "نسخ رابط المشاركة",
-  qrTip: "مشاركة عبر رمز QR",
-  remove: "حذف",
-  joinIn: "＋ ضمّ",
-  joinTip: "ضمّ هذه المجموعة الإستراتيجية إلى مجموعات أخرى (كعقدة وهمية)",
-  stratDel: "✕ إستراتيجية",
-  stratDelTip: "حذف هذه المجموعة الإستراتيجية",
-  emptyNoNodes:
-    "لا توجد عقد في المجموعة الحالية — الصق رابطًا أعلاه للاستيراد، أو اجلبها من صفحة «الاشتراكات».",
-  emptyAllV6:
-    "جميع عقد هذه المجموعة من IPv6 (مُصفاة حسب الإعدادات) — يمكنك إيقاف التصفية من «الإعدادات».",
-  stratTitle: "مجموعة إستراتيجية جديدة (اختيار أفضل الأعضاء تلقائيًا)",
-  nameLabel: "الاسم",
-  namePlaceholder: "مثال: الأفضل تلقائيًا",
-  autoCheck: "تلقائي (قياس الأعضاء غير المُقاسَة عند التشغيل واختيار الأسرع منها)",
-  noMembers: "لا توجد مجموعات أعضاء متاحة",
-  cancel: "إلغاء",
-  creating: "جارٍ الإنشاء…",
-  create: "إنشاء",
-  stratNeedName: "أدخل اسمًا واختر مجموعة عضو واحدة على الأقل",
-  joinTitle: "ضمّ «{remark}» إلى مجموعة",
-  joinTargetLabel: "المجموعة الهدف",
-  joinNoGroups: "لا توجد مجموعات أخرى بعد — أدخل اسمًا لإنشاء مجموعة جديدة والضم إليها:",
-  joinNewName: "اسم المجموعة الجديدة",
-  joining: "جارٍ الضم…",
-  joinBtn: "ضمّ",
-  joinCreateAndAdd: "إنشاء والضم",
-  joinNeedTarget: "اختر مجموعة هدف، أو أدخل اسم مجموعة جديدة للضم إليها",
-  joinOk: "تمت إضافة «{remark}» إلى المجموعة «{group}»",
-  dupSuffix: " (موجودة مسبقًا)",
-  delStrategyConfirm: "حذف المجموعة الإستراتيجية «{name}»؟",
-  delGroupConfirm: "حذف المجموعة «{name}» وكل عقدها؟",
-  promptNewGroup: "اسم المجموعة الجديدة",
-  promptRename: "إعادة تسمية المجموعة",
-  qrCopied: "تم نسخ الرابط إلى الحافظة",
-  copyOk: "تم نسخ رابط «{remark}»",
-  copyFail: "فشل النسخ",
-  copyFailManual: "فشل النسخ (استخدم النسخ اليدوي داخل نافذة رمز QR)",
-  switchedProxy: "تم تحويل الوكيل إلى «{remark}»",
-  proxyOnMsg: "تم تفعيل وكيل النظام (أوقفه بزر «إيقاف» أو بدّل الخيار للتراجع)",
-  close: "إغلاق",
-  copyLink: "نسخ الرابط",
-  latDash: "—",
-  latFail: "فشل",
-  latMs: "{n} ms",
-};
-const dict = useDict({ zh: zhL as Dict, en: enL, ar: arL });
+const dict = useDict({ zh: zhL as Dict, en: enL });
 function tt(k: DictKeys, p?: Record<string, string | number>): string {
   return fmt(dict.value[k] as string, p);
 }
@@ -905,6 +820,33 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 .group-ops { display: inline-flex; gap: 4px; }
 button.mini { padding: 3px 8px; font-size: 12px; }
+/* Uniform sizing across toolbar controls so the group/mode dropdowns and the
+   surrounding buttons (incl. the primary start button) sit on one line. */
+.toolbar .trow button,
+.toolbar .trow select,
+.toolbar .trow .chip {
+  height: 30px;
+  font-size: 13px;
+}
+.toolbar .trow button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.toolbar .trow .chip {
+  padding: 0 12px;
+}
+/* Selects: fixed height + leftover vertical padding clips the native label in
+   WebKitGTK, so drop it and center the text with line-height (appearance:none
+   turns the box into plain CSS we control; the chevron is drawn ourselves). */
+.toolbar .trow select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding: 0 26px 0 10px;
+  line-height: 28px; /* 30px height - 2px border */
+  background: url("data:image/svg+xml;charset=utf-8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M6 9l6 6 6-6'/></svg>")
+    no-repeat right 8px center / 12px 12px;
+}
 .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 4px 8px; border-radius: 20px; border: 1px solid var(--border); }
 .chip .dot { width: 8px; height: 8px; border-radius: 50%; background: #6b7280; }
 .chip.on .dot { background: #22c55e; }

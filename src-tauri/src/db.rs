@@ -94,7 +94,7 @@ pub struct Settings {
     /// interval in minutes between automatic subscription refreshes.
     #[serde(default = "default_auto_minutes")]
     pub auto_update_minutes: u32,
-    /// UI language: zh | en | ar
+    /// UI language: zh | en
     #[serde(default = "default_language")]
     pub language: String,
     pub selected_by_group: std::collections::HashMap<i64, String>,

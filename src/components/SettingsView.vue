@@ -23,7 +23,6 @@ const zhL = {
   langLabel: "语言",
   langZh: "中文",
   langEn: "English",
-  langAr: "العربية",
   closeTray: "关闭窗口时最小化到托盘",
   filterTitle: "开启后，导入/更新订阅与粘贴导入时会丢弃 server 为 IPv6 地址的节点",
   filterLabel: "过滤 IPv6 节点（立即保存，对之后导入/更新生效）",
@@ -64,7 +63,6 @@ const enL: Record<DictKeys, string> = {
   langLabel: "Language",
   langZh: "中文",
   langEn: "English",
-  langAr: "العربية",
   closeTray: "Minimize to tray when closing window",
   filterTitle: "When enabled, nodes whose server is an IPv6 address are dropped when importing/updating subscriptions or pasting import lists",
   filterLabel: "Filter IPv6 nodes (saved immediately; applies to future imports/updates)",
@@ -89,47 +87,7 @@ const enL: Record<DictKeys, string> = {
   portRange: "Port must be between 1 and 65535",
   coreVersionLabel: "Core version",
 };
-const arL: Record<DictKeys, string> = {
-  title: "الإعدادات",
-  portLabel: "منفذ استماع الوكيل (127.0.0.1 mixed)",
-  modeLabel: "الوضع",
-  modeGlobal: "وكيل عام",
-  modeRule: "قواعد (تجاوز البر الرئيسي)",
-  modeDirect: "اتصال مباشر (بدون وكيل)",
-  logLevelLabel: "مستوى سجل النواة (يُطبَّق عند تشغيل النواة التالي)",
-  logError: "الأخطاء فقط",
-  logWarn: "التحذيرات والأخطاء",
-  logInfo: "معلومات (للتصحيح)",
-  logDebug: "تصحيح",
-  langLabel: "اللغة",
-  langZh: "中文",
-  langEn: "English",
-  langAr: "العربية",
-  closeTray: "تصغير إلى علبة النظام عند إغلاق النافذة",
-  filterTitle: "عند التفعيل، تُستبعد العُقد التي يكون عنوان خادمها IPv6 عند استيراد/تحديث الاشتراكات أو لصق قوائم الاستيراد",
-  filterLabel: "تصفية عُقد IPv6 (يُحفظ فورًا ويسري على الاستيراد/التحديث اللاحق)",
-  autoTitle: "أثناء تشغيل التطبيق يُفحص كل دقيقة؛ وتُحدَّث تلقائيًا الاشتراكات التي تجاوزت مدة آخر تحديث ناجح لها الفاصل الزمني",
-  autoLabel: "تحديث الاشتراكات تلقائيًا (أثناء تشغيل التطبيق)",
-  intervalLabel: "فاصل التحديث",
-  intervalMin: "{n} دقيقة",
-  intervalH1: "ساعة واحدة",
-  intervalH3: "3 ساعات",
-  intervalH6: "6 ساعات",
-  intervalH12: "12 ساعة",
-  intervalH24: "24 ساعة",
-  intervalSaved: "تم ضبط فاصل التحديث على {n} دقيقة",
-  autoOn: "تم تفعيل التحديث التلقائي: تُجلب الاشتراكات في الخلفية أثناء تشغيل التطبيق",
-  autoOff: "تم إيقاف التحديث التلقائي",
-  filterOn: "تم تفعيل تصفية IPv6 (يسري على الاستيراد/التحديث اللاحق)",
-  filterOff: "تم إيقاف تصفية IPv6",
-  proxyNote: "مفتاح وكيل النظام المستقل موجود في شريط أدوات صفحة «المجموعات»: يمكن تشغيله أو إيقافه في أي وقت أثناء تشغيل النواة، ويُستعاد تلقائيًا عند الخروج.",
-  saveBtn: "حفظ",
-  savingBtn: "جارٍ الحفظ…",
-  saved: "تم الحفظ",
-  portRange: "يجب أن يكون المنفذ بين 1 و65535",
-  coreVersionLabel: "إصدار النواة",
-};
-const dict = useDict({ zh: zhL as Dict, en: enL, ar: arL });
+const dict = useDict({ zh: zhL as Dict, en: enL });
 function tt(k: DictKeys, p?: Record<string, string | number>): string {
   return fmt(dict.value[k] as string, p);
 }
@@ -147,7 +105,7 @@ const closeToTray = ref(true);
 const filterIpv6 = ref(false);
 const autoUpdate = ref(false);
 const autoMinutes = ref(360);
-const language = ref<"zh" | "en" | "ar">("zh");
+const language = ref<"zh" | "en">("zh");
 const minuteOptions = [15, 30, 60, 180, 360, 720, 1440];
 
 function intervalLabel(m: number): string {
@@ -177,7 +135,7 @@ onMounted(async () => {
     autoUpdate.value = settings.value.auto_update_subscriptions ?? false;
     autoMinutes.value = settings.value.auto_update_minutes ?? 360;
     const l = settings.value.language;
-    language.value = l === "en" || l === "ar" ? l : "zh";
+    language.value = l === "en" ? l : "zh";
     applyLocale(language.value);
     version.value = await coreVersion();
   } catch (e) {
@@ -215,7 +173,7 @@ async function toggleFilter(on: boolean) {
   }
 }
 
-async function setLanguage(v: "zh" | "en" | "ar") {
+async function setLanguage(v: "zh" | "en") {
   try {
     settings.value = await settingsSet({ language: v });
     language.value = v;
@@ -275,10 +233,9 @@ async function save() {
       </select>
 
       <label>{{ tt("langLabel") }}</label>
-      <select :value="language" class="field" @change="setLanguage(($event.target as HTMLSelectElement).value as 'zh' | 'en' | 'ar')">
+      <select :value="language" class="field" @change="setLanguage(($event.target as HTMLSelectElement).value as 'zh' | 'en')">
         <option value="zh">{{ tt("langZh") }}</option>
         <option value="en">{{ tt("langEn") }}</option>
-        <option value="ar">{{ tt("langAr") }}</option>
       </select>
 
       <label class="check">

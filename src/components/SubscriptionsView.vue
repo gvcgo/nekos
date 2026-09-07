@@ -178,87 +178,7 @@ const enL: Record<DictKeys, string> = {
   subRefreshed: "“{name}” updated: {n} nodes, {m} errors",
   newSubDefault: "New subscription",
 };
-const arL: Record<DictKeys, string> = {
-  title: "الاشتراكات",
-  subCount: "عدد مجموعات الاشتراك: {n}",
-  autoOn: "التحديث التلقائي مفعّل (كل {minutes} دقيقة)",
-  updating: "جارٍ التحديث…",
-  refreshAll: "تحديث الكل",
-  multiPick: "اختيار عقد من عدة اشتراكات…",
-  allUpdated: "تم تحديث جميع الاشتراكات",
-  name: "الاسم",
-  colUrl: "الرابط",
-  colTraffic: "البيانات",
-  update: "التحديث",
-  editTip: "تعديل الرابط/الترويسات",
-  copyTip: "إضافة عقد هذا الاشتراك إلى مجموعة",
-  refreshNow: "جلب التحديث الآن",
-  viewNodes: "عرض العقد",
-  deleteSub: "حذف الاشتراك",
-  dueShort: "مستحق",
-  dash: "—",
-  secAgo: "منذ {n} ثانية",
-  minAgo: "منذ {n} دقيقة",
-  hourAgo: "منذ {n} ساعة",
-  dayAgo: "منذ {n} يوم",
-  countMin: "{n} دقيقة",
-  countHour: "{n} ساعة",
-  quotaUsed: "المستخدم: {up}↑ / {down}↓",
-  quotaTotal: "الإجمالي: {total}",
-  quotaExpire: "تاريخ الانتهاء: {date}",
-  lastUpdatedAt: "آخر تحديث: {at}",
-  neverUpdated: "لم يُحدَّث مطلقًا",
-  dueAuto: "مستحق الآن — سيتم التحديث تلقائيًا في الخلفية",
-  nextAutoAt: "التحديث التلقائي القادم: {date}",
-  delConfirm: "حذف الاشتراك «{name}» وعقد مجموعته الخاصة؟\nستبقى النسخ المضافة إلى مجموعات أخرى.",
-  editSaved: "تم حفظ إعدادات الاشتراك — اضغط «تحديث» لإعادة الجلب بالإعدادات الجديدة",
-  subUrl: "رابط الاشتراك",
-  userAgent: "User-Agent",
-  extraHeaders: "ترويسات إضافية",
-  editUrlPh: "https://example.com/sub أو ...?clash=2",
-  uaPh: "مثال: clash-verge/v2.5.2 (اتركه فارغًا حتى لا يُرسَل)",
-  extrasPh: "Referer: https://example.com\nAuthorization: Bearer xxx",
-  saving: "جارٍ الحفظ…",
-  saveChanges: "حفظ التغييرات",
-  cancel: "إلغاء",
-  emptyState: "لا توجد مجموعات اشتراك بعد — أنشئ واحدة عبر «جلب اشتراك جديد» أدناه.",
-  copyTitle: "إضافة عقد «{name}» إلى مجموعة",
-  targetGroup: "المجموعة الهدف",
-  selectAll: "تحديد الكل",
-  joining: "جارٍ الإضافة…",
-  joinCount: "إضافة {n} من العقد",
-  copyNeedTarget: "أنشئ مجموعة هدف أولًا (صفحة الخوادم «+ جديد»)",
-  noNodePicked: "لم يتم تحديد أي عقد",
-  joinedMsg: "تمت إضافة {n} من العقد إلى المجموعة «{name}»",
-  dupSkipComma: " ({m} موجودة مسبقًا — تم تخطيها)",
-  multiTitle: "اختر عقدًا من عدة اشتراكات لاستيرادها إلى مجموعة",
-  srcTitle: "مصادر الاشتراك",
-  searchPh: "ابحث في الاسم أو النوع (مثل HKG أو trojan)",
-  selCount: "المحدد {n} / {m}",
-  selectFiltered: "تحديد الكل (حسب الفلتر)",
-  clearSel: "مسح التحديد",
-  showTrunc: "يُعرض أول 600 فقط (من أصل {n}) — ابحث لتضييق النطاق",
-  noMatch: "لا توجد عقد مطابقة",
-  importToGroup: "الاستيراد إلى مجموعة",
-  importing: "جارٍ الاستيراد…",
-  importCount: "استيراد {n} من العقد",
-  multiNeedTarget: "لا توجد مجموعة هدف (أنشئ واحدة في صفحة الخوادم أولًا)",
-  multiImported: "تم دمج {n} من العقد في «{name}»",
-  dupSkipParen: " ({m} موجودة مسبقًا — تم تخطيها)",
-  fetchNew: "جلب اشتراك جديد ＋",
-  subUrlPh: "https://example.com/xxxx/sub أو ...?clash=2",
-  fetching: "جارٍ الجلب…",
-  fetchParse: "جلب وتحليل",
-  uaExamplePh: "مثال: clash-verge/v2.5.2",
-  headersPh: "Referer: https://example.com\nكل سطر «Key: Value»",
-  parseSummary: "تم تحليل {n} عقدًا · {m} خطأ",
-  newGroupNamePh: "اسم مجموعة الاشتراك الجديدة",
-  saveNewGroup: "حفظ كمجموعة اشتراك جديدة",
-  subCreated: "تم إنشاء الاشتراك «{name}» ({n} عقد)",
-  subRefreshed: "تم تحديث «{name}»: {n} عقد، {m} أخطاء",
-  newSubDefault: "اشتراك جديد",
-};
-const dict = useDict({ zh: zhL as Dict, en: enL, ar: arL });
+const dict = useDict({ zh: zhL as Dict, en: enL });
 function tt(k: DictKeys, p?: Record<string, string | number>): string {
   return fmt(dict.value[k] as string, p);
 }
@@ -648,7 +568,7 @@ async function saveEdit() {
 // ---- new subscription ---------------------------------------------------
 
 const url = ref("");
-const ua = ref("clash-verge/v2.5.2");
+const ua = ref("");
 const extraHeaders = ref("");
 const saveName = ref("");
 const fetchBusy = ref(false);
@@ -943,6 +863,10 @@ button:disabled { opacity: 0.5; cursor: default; }
 .new summary { cursor: pointer; font-size: 14px; margin-bottom: 8px; }
 .new-form { display: flex; flex-direction: column; gap: 8px; max-width: 760px; }
 .row { display: flex; gap: 8px; }
+/* URL input flexes instead of claiming 100% (which squeezed the button into
+   wrapped text); the button keeps its natural width on one line. */
+.row .inp { width: auto; flex: 1 1 380px; min-width: 0; }
+.row button { flex: 0 0 auto; white-space: nowrap; }
 .preview { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12px; }
 .dialog-mask {
   position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45);

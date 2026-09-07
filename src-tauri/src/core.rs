@@ -130,7 +130,7 @@ impl CoreCtl {
             .spawn()
             .map_err(|e| {
                 format!(
-                    "cannot run core `{}` ({e}); build it with: go build -o core/bin/nekos-core ./cmd/nekos-core",
+                    "cannot run core `{}` ({e}); build it with: ./build.sh (or: cd core && go build -tags with_utls,with_grpc -o bin/nekos-core ./cmd/nekos-core)",
                     self.bin.display()
                 )
             })?;

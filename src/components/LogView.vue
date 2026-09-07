@@ -28,19 +28,7 @@ const enL: Record<DictKeys, string> = {
   pause: "Pause",
   empty: "No logs yet — start the proxy and sing-box output will appear here in real time.",
 };
-const arL: Record<DictKeys, string> = {
-  title: "السجلات",
-  hint: "مخرجات نواة sing-box (يبدأ السجل من البداية بعد إعادة تشغيل النواة)",
-  fAll: "الكل",
-  fError: "الأخطاء",
-  fWarn: "التحذيرات",
-  fInfo: "المعلومات",
-  fDebug: "التصحيح",
-  autoScroll: "تمرير تلقائي",
-  pause: "إيقاف مؤقت",
-  empty: "لا توجد سجلات بعد — ابدأ تشغيل الوكيل وستظهر مخرجات sing-box هنا في الوقت الفعلي.",
-};
-const dict = useDict({ zh: zhL as Dict, en: enL, ar: arL });
+const dict = useDict({ zh: zhL as Dict, en: enL });
 function tt(k: DictKeys, p?: Record<string, string | number>): string {
   return fmt(dict.value[k] as string, p);
 }
