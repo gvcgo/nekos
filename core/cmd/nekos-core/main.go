@@ -7,8 +7,10 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/signal"
 	"runtime/debug"
@@ -20,6 +22,7 @@ import (
 
 	"nekos/core/internal/build"
 	"nekos/core/internal/link"
+	"nekos/core/internal/rpc"
 	"nekos/core/internal/run"
 	"nekos/core/internal/urltest"
 )
@@ -37,6 +40,8 @@ func main() {
 		err = cmdConfig()
 	case "run":
 		err = cmdRun()
+	case "serve":
+		err = cmdServe(os.Args[2:])
 	case "test":
 		err = cmdTest(os.Args[2:])
 	case "urltest":
@@ -70,6 +75,11 @@ usage:
                                  assembled (validated) sing-box config JSON
   nekos-core run                 read a session JSON on stdin and run until
                                  SIGINT/SIGTERM
+  nekos-core serve --rpc LISTEN --token TOKEN
+                                 long-lived JSON-RPC control process
+                                 (architecture.md §6); prints its bound
+                                 address as {"rpc": "127.0.0.1:PORT"} on
+                                 stdout once the listener is up
   nekos-core test [-target HOST:PORT] [-timeout SECONDS]
                                  read a session JSON on stdin, measure TCP
                                  latency through the selected node, print
@@ -166,6 +176,56 @@ func cmdRun() error {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
+	return m.Stop()
+}
+
+// cmdServe runs the long-lived JSON-RPC control process (architecture.md
+// §6.1). The orchestrator passes a loopback listen address (127.0.0.1:0 for
+// an ephemeral port) and a random token; the bound address is printed as a
+// single JSON line on stdout so the orchestrator can start talking.
+func cmdServe(args []string) error {
+	listen := "127.0.0.1:0"
+	token := ""
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--rpc":
+			i++
+			if i >= len(args) {
+				return fmt.Errorf("--rpc needs a value")
+			}
+			listen = args[i]
+		case "--token":
+			i++
+			if i >= len(args) {
+				return fmt.Errorf("--token needs a value")
+			}
+			token = args[i]
+		default:
+			return fmt.Errorf("unknown flag %q", args[i])
+		}
+	}
+	if token == "" {
+		return errors.New("serve requires --token")
+	}
+	ln, err := net.Listen("tcp", listen)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", listen, err)
+	}
+	m := run.NewManager()
+	srv := rpc.NewServer(token, m)
+	go func() {
+		_ = srv.Serve(ln)
+	}()
+	out, _ := json.Marshal(map[string]any{
+		"running": false,
+		"rpc":     ln.Addr().String(),
+	})
+	fmt.Println(string(out))
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	<-sig
+	_ = srv.Close()
 	return m.Stop()
 }
 
