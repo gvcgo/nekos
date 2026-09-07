@@ -198,6 +198,8 @@ export interface Settings {
   auto_update_subscriptions?: boolean;
   auto_update_minutes?: number;
   language?: string; // zh | en
+  /** Launch at login (XDG autostart). */
+  auto_start?: boolean;
   selected_by_group: Record<number, string>;
   /** Active custom routing profile id; null/absent => built-in bypass-mainland. */
   route_profile_id?: number | null;
@@ -215,6 +217,7 @@ export interface SettingsPatch {
   auto_update_subscriptions?: boolean;
   auto_update_minutes?: number;
   language?: string;
+  auto_start?: boolean;
 }
 
 export function settingsGet(): Promise<Settings> {

@@ -2,6 +2,7 @@
 //! proxy, tray and all UI-facing commands (see ../src/api.ts for the
 //! mirrored TS contracts).
 
+mod autostart;
 mod core;
 mod db;
 mod runtime;
@@ -13,12 +14,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use db::{Db, NewNode, Settings};
-use runtime::RuntimeState;
+use runtime::LogEntry;
 use serde::Serialize;
 use subscribe::{fetch_subscribe, SubscribeOutcome};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 use crate::core::{CoreCtl, ImportResult};
 
@@ -28,10 +29,10 @@ use crate::core::{CoreCtl, ImportResult};
 pub struct AppState {
     db: Arc<Mutex<Db>>,
     ctl: CoreCtl,
-    runtime: Arc<Mutex<RuntimeState>>,
     proxy_on: Arc<Mutex<bool>>,
     quitting: Arc<AtomicBool>,
     updating: Arc<Mutex<std::collections::HashSet<i64>>>,
+    measuring: Arc<AtomicBool>,
     data_dir: Arc<std::path::PathBuf>,
 }
 
@@ -43,10 +44,10 @@ impl AppState {
         Ok(AppState {
             db: Arc::new(Mutex::new(db)),
             ctl: CoreCtl::new(),
-            runtime: Arc::new(Mutex::new(RuntimeState::default())),
             proxy_on: Arc::new(Mutex::new(false)),
             quitting: Arc::new(AtomicBool::new(false)),
             updating: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            measuring: Arc::new(AtomicBool::new(false)),
             data_dir: Arc::new(dir),
         })
     }
@@ -270,9 +271,9 @@ fn filter_nodes(nodes: &[core::NodeMeta], filter_ipv6: bool) -> Vec<core::NodeMe
 }
 
 fn shutdown_all(state: &AppState) {
-    if let Ok(mut rt) = state.runtime.lock() {
-        let _ = rt.stop();
-    }
+    // Kill the control process (the instance dies with it) and restore the
+    // system proxy.
+    state.ctl.shutdown();
     let proxy = state.proxy_on.lock().map(|g| *g).unwrap_or(false);
     if proxy {
         let _ = sysproxy::disable();
@@ -295,8 +296,11 @@ fn core_version(state: State<'_, AppState>) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn parse_text(text: String, ctl: State<'_, CoreCtl>) -> Result<ImportResult, String> {
-    ctl.parse(&text)
+async fn parse_text(state: State<'_, AppState>, text: String) -> Result<ImportResult, String> {
+    let ctl = state.ctl.clone();
+    tauri::async_runtime::spawn_blocking(move || ctl.parse(&text))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -610,6 +614,7 @@ struct SettingsPatch {
     auto_update_subscriptions: Option<bool>,
     auto_update_minutes: Option<u32>,
     language: Option<String>,
+    auto_start: Option<bool>,
 }
 
 #[tauri::command]
@@ -617,8 +622,9 @@ async fn settings_set(
     state: State<'_, AppState>,
     patch: SettingsPatch,
 ) -> Result<Settings, String> {
+    let prev = state.settings();
     let db = state.db.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let saved = tauri::async_runtime::spawn_blocking(move || -> Result<Settings, String> {
         let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
         let mut s = db.load_settings();
         if let Some(v) = patch.current_group_id {
@@ -654,21 +660,34 @@ async fn settings_set(
         if let Some(v) = patch.language {
             s.language = v;
         }
+        if let Some(v) = patch.auto_start {
+            s.auto_start = v;
+        }
         db.save_settings(&s).map_err(|e| e.to_string())?;
         Ok(s)
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())??;
+
+    // Apply the side effect that needs the running app: the XDG autostart
+    // entry.
+    if saved.auto_start != prev.auto_start {
+        let res = if saved.auto_start {
+            autostart::enable()
+        } else {
+            autostart::disable()
+        };
+        if let Err(e) = res {
+            return Err(format!("开机自启: {e}"));
+        }
+    }
+    Ok(saved)
 }
 
 /// Last captured core log lines (newest last).
 #[tauri::command]
-fn log_tail(state: State<'_, AppState>, limit: Option<usize>) -> Vec<runtime::LogEntry> {
-    state
-        .runtime
-        .lock()
-        .map(|rt| rt.tail_logs(limit.unwrap_or(300)))
-        .unwrap_or_default()
+fn log_tail(state: State<'_, AppState>, limit: Option<usize>) -> Vec<LogEntry> {
+    state.ctl.tail_logs(limit.unwrap_or(300))
 }
 
 /// Remember which node is "current" for a group.
@@ -774,6 +793,7 @@ async fn measure_node(
     group_id: i64,
     node_id: String,
 ) -> Result<MeasureView, String> {
+    let _guard = MeasureGuard::acquire(&state.measuring)?;
     if let Some(sgid) = node_id
         .strip_prefix("strat:")
         .and_then(|v| v.parse::<i64>().ok())
@@ -815,21 +835,147 @@ async fn measure_node(
     Ok(MeasureView { delay_ms: row.delay_ms, error: row.error })
 }
 
+/// Live per-node latency event pushed to the UI as each node finishes
+/// (frontend listens on "latency:row").
+#[derive(Serialize, Clone)]
+struct LatencyRowEvent {
+    node_id: String,
+    delay_ms: Option<i64>,
+    error: Option<String>,
+}
+
+/// Random hex id for a tracked batch-probe run.
+fn run_id_hex() -> String {
+    let mut buf = [0u8; 16];
+    let _ = getrandom::getrandom(&mut buf);
+    let mut s = String::with_capacity(32);
+    for b in buf {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
 /// Measure every node of a group in one instance, persisted per node.
+/// Rows are pushed to the UI one by one as the core finishes each node
+/// ("latency:row" events) instead of arriving only when the whole batch
+/// completes; the command returns the full result array at the end.
 #[tauri::command]
 async fn measure_batch(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     group_id: i64,
 ) -> Result<Vec<BatchRow>, String> {
+    let _guard = MeasureGuard::acquire(&state.measuring)?;
     let db = state.db.clone();
     let ctl = state.ctl.clone();
     let filter_v6 = state.settings().filter_ipv6;
-    let rows = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<core::UrlTestRow>, String> {
-        let entries = resolve_entries(&db, group_id, None, filter_v6)?;
-        probe_and_persist(&db, &ctl, &entries)
+
+    let db_r = db.clone();
+    let entries = tauri::async_runtime::spawn_blocking(move || {
+        resolve_entries(&db_r, group_id, None, filter_v6)
     })
     .await
     .map_err(|e| e.to_string())??;
+
+    let run_id = run_id_hex();
+    let items: Vec<serde_json::Value> = entries
+        .iter()
+        .map(|(id, out, _)| serde_json::json!({ "id": id, "out": out }))
+        .collect();
+    let payload = serde_json::json!({
+        "entries": items,
+        "timeout_s": 5,
+        "run_id": run_id.as_str(),
+    })
+    .to_string();
+
+    // Kick the batch on a worker thread; results stream back through
+    // core.url_test_progress polls. Errors land in the shared slot.
+    let err_slot: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let ctl_worker = ctl.clone();
+    let err_worker = err_slot.clone();
+    std::thread::spawn(move || {
+        if let Err(e) = ctl_worker.urltest(&payload) {
+            *err_worker.lock().unwrap() = Some(e);
+        }
+    });
+
+    // Emit each node the first time its value appears; re-emit when a
+    // retry round replaces an error with a delay.
+    let mut values: HashMap<String, (Option<i64>, Option<String>)> = HashMap::new();
+    let mut accumulated: Vec<core::UrlTestRow> = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    let done_rows: Arc<Mutex<Option<Vec<core::UrlTestRow>>>> = Arc::new(Mutex::new(None));
+    let done_slot = done_rows.clone();
+    loop {
+        if let Some(e) = err_slot.lock().unwrap().clone() {
+            return Err(e);
+        }
+        let ctl_poll = ctl.clone();
+        let rid = run_id.clone();
+        let prog = tauri::async_runtime::spawn_blocking(move || {
+            ctl_poll.url_test_progress(&rid)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        if prog.found {
+            for r in &prog.results {
+                let key = (r.delay_ms, r.error.clone());
+                if values.get(&r.id) != Some(&key) {
+                    values.insert(r.id.clone(), key);
+                    let _ = app.emit(
+                        "latency:row",
+                        LatencyRowEvent {
+                            node_id: r.id.clone(),
+                            delay_ms: r.delay_ms,
+                            error: r.error.clone(),
+                        },
+                    );
+                }
+            }
+            if prog.done {
+                *done_slot.lock().unwrap() = Some(prog.results);
+                break;
+            }
+            accumulated = prog.results;
+        }
+        if std::time::Instant::now() > deadline {
+            break; // run lost (daemon respawned mid-batch): report what arrived
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+
+    let rows = done_rows
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap_or(accumulated);
+    // Persist under each node's owning group (mirrors probe_and_persist).
+    {
+        let db = db.clone();
+        let owner: HashMap<String, i64> = entries
+            .iter()
+            .map(|(id, _, g)| (id.clone(), *g))
+            .collect();
+        let rows = rows.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            if let Ok(db) = db.lock() {
+                for r in &rows {
+                    if let Some(g) = owner.get(&r.id) {
+                        let _ = db.upsert_latency(
+                            *g,
+                            &r.id,
+                            r.delay_ms,
+                            r.error.as_deref(),
+                            &unix_now_secs(),
+                        );
+                    }
+                }
+            }
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    }
     Ok(rows
         .into_iter()
         .map(|r| BatchRow {
@@ -1020,6 +1166,32 @@ async fn subscription_edit(
 struct RefreshGuard {
     updating: Arc<Mutex<std::collections::HashSet<i64>>>,
     group_id: i64,
+}
+
+/// Single-flight guard for latency tests: overlapping batch/node measures
+/// double the probe burst against the exit servers, which trips their
+/// per-IP session limits and makes valid nodes time out. Second concurrent
+/// measure is rejected instead of stacked.
+struct MeasureGuard {
+    flag: Arc<AtomicBool>,
+}
+
+impl MeasureGuard {
+    fn acquire(flag: &Arc<AtomicBool>) -> Result<MeasureGuard, String> {
+        if flag
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Err("已有测速任务进行中，请稍候再试".into());
+        }
+        Ok(MeasureGuard { flag: flag.clone() })
+    }
+}
+
+impl Drop for MeasureGuard {
+    fn drop(&mut self) {
+        self.flag.store(false, Ordering::SeqCst);
+    }
 }
 
 impl RefreshGuard {
@@ -1257,11 +1429,7 @@ fn core_status(state: State<'_, AppState>) -> CoreStatusView {
 }
 
 fn core_status_raw(state: &AppState) -> CoreStatusView {
-    let (running, started_at) = state
-        .runtime
-        .lock()
-        .map(|rt| (rt.is_running(), rt.started_at().map(|s| s.to_string())))
-        .unwrap_or((false, None));
+    let (running, started_at) = state.ctl.mirror();
     let proxy_enabled = state.proxy_on.lock().map(|g| *g).unwrap_or(false);
     CoreStatusView {
         running,
@@ -1283,14 +1451,12 @@ async fn core_start(state: State<'_, AppState>) -> Result<RunResult, String> {
         state.build_session(group_id, rule_assets, settings.filter_ipv6)?;
 
     let ctl = state.ctl.clone();
-    let runtime = state.runtime.clone();
     // System proxy is NOT auto-enabled on start: the user controls it
-    // independently via the toolbar switch (proxy_set).
+    // independently via the toolbar switch (proxy_set). core.start over
+    // RPC boots the instance (or rebuilds it in-process when already
+    // running — the node-switch path).
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
-        let mut rt = runtime
-            .lock()
-            .map_err(|_| "runtime lock poisoned".to_string())?;
-        rt.start(&ctl, &session_json)
+        ctl.core_start(&session_json)
     })
     .await
     .map_err(|e| e.to_string())??;
@@ -1311,7 +1477,7 @@ async fn proxy_set(
 ) -> Result<CoreStatusView, String> {
     let db = state.db.clone();
     let proxy_on = state.proxy_on.clone();
-    let running = state.runtime.lock().map(|rt| rt.is_running()).unwrap_or(false);
+    let running = state.ctl.mirror().0;
     if enabled && !running {
         return Err("内核未运行，无法开启系统代理（请先「启动」）".into());
     }
@@ -1335,12 +1501,10 @@ async fn proxy_set(
 
 #[tauri::command]
 async fn core_stop(state: State<'_, AppState>) -> Result<CoreStatusView, String> {
-    let runtime = state.runtime.clone();
+    let ctl = state.ctl.clone();
     let proxy_on = state.proxy_on.clone();
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
-        if let Ok(mut rt) = runtime.lock() {
-            rt.stop()?;
-        }
+        ctl.core_stop()?;
         if proxy_on.lock().map(|g| *g).unwrap_or(false) {
             let _ = sysproxy::disable();
             *proxy_on.lock().unwrap() = false;
@@ -1461,7 +1625,15 @@ pub fn run() {
             let app_state = state.clone();
             app.manage(state);
             // subscription auto-refresh scheduler (runs while the app lives)
-            tauri::async_runtime::spawn(auto_update_loop(app_state));
+            tauri::async_runtime::spawn(auto_update_loop(app_state.clone()));
+
+            // Apply persisted desktop-integration settings at launch
+            // (best effort: failures are logged, not fatal).
+            if app_state.settings().auto_start {
+                if let Err(e) = autostart::enable() {
+                    eprintln!("autostart: {e}");
+                }
+            }
 
             let tray_icon = app
                 .default_window_icon()

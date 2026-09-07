@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { listen } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import {
   coreStatus,
@@ -218,6 +219,8 @@ const err = ref("");
 const delayMap = ref<Record<string, MeasureView>>({});
 const testingAll = ref(false);
 const sortByDelay = ref(true);
+/** unregister for the live per-node latency stream (see onMounted). */
+let unlistenLatency: (() => void) | undefined;
 
 /** v6 heuristic mirror of the Rust filter (server without port). */
 function nodeIsV6(n: Node): boolean {
@@ -596,14 +599,24 @@ async function testNode(nodeId: string) {
 async function testAll() {
   testingAll.value = true;
   err.value = "";
+  // Show every real node row as "testing" up front; latency:row events
+  // from the backend light each one up as it finishes. Strategy pseudo
+  // rows are NOT part of "test all" — they are only tested individually
+  // (their single test measures every member and reports the fastest).
+  const dm = { ...delayMap.value };
+  for (const n of visibleNodes.value) {
+    if (n.type === "strategy") continue;
+    if (!dm[n.id]) dm[n.id] = { delay_ms: null, error: null };
+  }
+  delayMap.value = dm;
   try {
     // one core instance probes every node concurrently (v2rayN semantics)
     const rows = await measureBatch(currentGroupId());
-    const dm: Record<string, MeasureView> = { ...delayMap.value };
+    const fin = { ...delayMap.value };
     for (const r of rows) {
-      dm[r.node_id] = { delay_ms: r.delay_ms ?? null, error: r.error ?? null };
+      fin[r.node_id] = { delay_ms: r.delay_ms ?? null, error: r.error ?? null };
     }
-    delayMap.value = dm;
+    delayMap.value = fin;
   } catch (e) {
     err.value = String(e);
   } finally {
@@ -635,7 +648,23 @@ function delayText(n: Node): string {
   return tt("testing"); // probe in flight (no result yet)
 }
 
-onMounted(loadAll);
+onMounted(async () => {
+  // live per-node latency as a batch test streams (see measure_batch)
+  unlistenLatency = await listen<{ node_id: string; delay_ms?: number | null; error?: string | null }>(
+    "latency:row",
+    (e) => {
+      const p = e.payload;
+      const dm = { ...delayMap.value };
+      dm[p.node_id] = { delay_ms: p.delay_ms ?? null, error: p.error ?? null };
+      delayMap.value = dm;
+    },
+  );
+  await loadAll();
+});
+
+onBeforeUnmount(() => {
+  unlistenLatency?.();
+});
 </script>
 
 <template>

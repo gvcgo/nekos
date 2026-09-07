@@ -130,24 +130,26 @@ builder 无需维护映射表。tag 由编排层按 entry.id 派生（`out-<id>`
 - 事件：`GET /events` 长连接（SSE 简化版：`event: <name>\ndata: <json>\n\n`）。
 - 鉴权：每个请求头 `Authorization: Bearer <token>`；token 仅经进程参数/stdin 传递，Rust 侧随机生成。
 
-### 6.2 方法面（v0 草案）
+### 6.2 方法面（v0 已落地 2026-09-07）
 ```
-parse.text        {text} → {nodes: NodeSpec[], errors: []}          // 链接/订阅混合文本
-config.dry        {session} → {config}                              // 预演生成的 sing-box 配置(调试用)
-core.start        {session} → {status}                              // 组装配置并 box.New + 启动
-core.stop         {} → {status}
-core.status       {} → {running, version, started_at, inbounds…}
-core.select       {tag}                                             // 热切换（见 §6.3）
-core.url_test     {tags: []|null, target, timeout} → {results}      // 延迟/可用性（复用 URLTest 出站机制）
-core.stats        {since} → {up, down}                              // 连接级流量(与 clash api 二选一)
+parse.text        {text} → {nodes: NodeSpec[], errors: []}          // ✅ 链接/订阅混合文本
+config.dry        {session} → {config}                              // ✅ 预演生成 sing-box 配置(调试用)
+core.start        {session} → {status}                              // ✅ 组装配置并 box.New + 启动；运行中调用 = 进程内重建(切节点)
+core.stop         {} → {status}                                     // ✅
+core.status       {} → {running, started_at, core}                  // ✅
+core.url_test     {entries, url?, timeout_s?, run_id?} → {results}   // ✅ 批量延迟(独立探测实例；sing-box URLTest 计时与 v2rayN 同语义；瞬态失败自动重试；>24 节点并发 10)
+core.url_test_progress {run_id} → {found, done, results[]}           // ✅ 批测进度轮询：节点测完即返回，UI 逐行点亮
+encode / qr       {remark, out[, size]} → link / base64 png         // ✅ 分享链接/二维码（不再逐次 fork）
+core.select       {tag}                                             // 热切换（见 §6.3，P1+）
+core.stats        {since} → {up, down}                              // 连接级流量(与 clash api 二选一)，P2
 core.rulesets.*   （P2: 规则集下载/加载在编排层做，core 只认本地 srs 文件路径）
-core.log          {level, lines}
+core.log          {level, lines}                                    // 现状：编排层读 daemon stderr；SSE /events 已推 core.started/core.stopped
 ```
-`session` 载荷（编排层→core）：`{mode: rule|global|direct, selected_tag, inbounds: {socks_port?, http_port?, mixed_port?, tun?}, dns: {…}, ruleset_paths: []}`。core 内部由 session+节点库（NodeSpec 列表随 start 一并传，或按 tag 引用先前 parse 结果）组装完整 option。
+`session` 载荷（编排层→core）：`{mode: rule|global|direct|strategy, selected_tag, inbounds: {socks_port?, http_port?, mixed_port?, tun?}, dns: {…}, ruleset_paths: []}`。core 内部由 session+节点库（NodeSpec 列表随 start 一并传，或按 tag 引用先前 parse 结果）组装完整 option。
 
 ### 6.3 切节点与测速的两种实现，按里程碑演进
-- **P0 现状（2026-09-06 落地）**：编排层以 `nekos-core run` **子进程 + stdin session** 的方式管理长驻 core（就绪判定读首行 JSON），停止即 kill；切节点 = 停旧启新（整核重建）。测速走 `nekos-core test` 短命令（URL probe，复用 run 包 MeasureNode）。这是 §6.2 中 `core.run/core.stop/url_test` 语义的过渡实现，不含 token/RPC。
-- P1+ 增强：见下（selector 热切换 / loopback clash api）；长驻 JSON-RPC 面（§6.1/§6.2）作为独立项推进。
+- **现状（2026-09-07 落地）**：编排层拉起**长驻 `nekos-core serve`**（`--rpc 127.0.0.1:0 --token <random>`，stdout 首行回 `{"rpc": "127.0.0.1:PORT"}` 完成就绪握手；§6.1），此后 parse/启停/测速/编码全走 JSON-RPC（token Bearer）。切节点 = `core.start`（运行中调用 → 进程内 `Manager.Replace`：先校验新配置、新 box 启动失败自动回滚上一 session，旧实例在配置非法时不受影响）。批量测速 = `core.url_test`（独立探测实例与运行实例共存）。CLI `run`/`urltest`/`parse` 保留为调试/单测通道，不再是 UI 主路径。
+- P1+ 增强：见下（selector 热切换 / loopback clash api）。
 - P0/P1 兜底：**重建实例**——更新 session、停旧 `box`、启新 `box`（毫秒级；v2rayN 亦是整核重启）。简单、零内部 API 依赖。
 - P1+ 增强：尝试 sing-box 已导出的 selector/urltest 运行时切换（若上游提供对外控制入口，如 clashapi handler 同款逻辑）；**若不可行则启用 loopback-only 的 `experimental.clash_api`**（sing-box 原生支持 selector 切换、`/proxies/{name}/delay`、`/connections` 统计）作为运行时控制面，此时 core 自建的 core.select/core.url_test 变薄代理。两条路都保留，不把宝押在内部未导出 API 上。
 

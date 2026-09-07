@@ -29,6 +29,10 @@ const zhL = {
   filterLabel: "过滤 IPv6 节点（立即保存，对之后导入/更新生效）",
   autoTitle: "应用运行期间每分钟检查；距上次成功更新超过间隔的订阅自动抓取更新",
   autoLabel: "自动更新订阅（应用运行期间）",
+  autoStartTitle: "登录时自动启动 nekos（写入 XDG autostart 桌面项，指向当前程序）",
+  autoStartLabel: "开机自启（登录时启动）",
+  autoStartOn: "已开启开机自启",
+  autoStartOff: "已关闭开机自启",
   intervalLabel: "更新间隔",
   intervalMin: "{n} 分钟",
   intervalH1: "1 小时",
@@ -69,6 +73,10 @@ const enL: Record<DictKeys, string> = {
   filterLabel: "Filter IPv6 nodes (saved immediately; applies to future imports/updates)",
   autoTitle: "While the app runs, checks every minute; subscriptions whose last successful update is older than the interval are fetched automatically",
   autoLabel: "Auto-update subscriptions (while the app runs)",
+  autoStartTitle: "Launch nekos at login (writes an XDG autostart entry pointing at the current executable)",
+  autoStartLabel: "Start at login",
+  autoStartOn: "Start-at-login enabled",
+  autoStartOff: "Start-at-login disabled",
   intervalLabel: "Update interval",
   intervalMin: "{n} min",
   intervalH1: "1 hour",
@@ -106,6 +114,7 @@ const closeToTray = ref(true);
 const filterIpv6 = ref(false);
 const autoUpdate = ref(false);
 const autoMinutes = ref(360);
+const autoStart = ref(false);
 const language = ref<"zh" | "en">("zh");
 const minuteOptions = [15, 30, 60, 180, 360, 720, 1440];
 
@@ -135,6 +144,7 @@ onMounted(async () => {
     filterIpv6.value = settings.value.filter_ipv6 ?? false;
     autoUpdate.value = settings.value.auto_update_subscriptions ?? false;
     autoMinutes.value = settings.value.auto_update_minutes ?? 360;
+    autoStart.value = settings.value.auto_start ?? false;
     const l = settings.value.language;
     language.value = l === "en" ? l : "zh";
     applyLocale(language.value);
@@ -169,6 +179,16 @@ async function toggleFilter(on: boolean) {
     settings.value = await settingsSet({ filter_ipv6: on });
     filterIpv6.value = on;
     savedMsg.value = on ? tt("filterOn") : tt("filterOff");
+  } catch (e) {
+    err.value = String(e);
+  }
+}
+
+async function toggleAutoStart(on: boolean) {
+  try {
+    settings.value = await settingsSet({ auto_start: on });
+    autoStart.value = on;
+    savedMsg.value = on ? tt("autoStartOn") : tt("autoStartOff");
   } catch (e) {
     err.value = String(e);
   }
@@ -250,6 +270,10 @@ async function save() {
       <label class="check" :title="tt('autoTitle')">
         <input type="checkbox" :checked="autoUpdate" @change="toggleAutoUpdate(($event.target as HTMLInputElement).checked)" />
         {{ tt("autoLabel") }}
+      </label>
+      <label class="check" :title="tt('autoStartTitle')">
+        <input type="checkbox" :checked="autoStart" @change="toggleAutoStart(($event.target as HTMLInputElement).checked)" />
+        {{ tt("autoStartLabel") }}
       </label>
       <div v-if="autoUpdate" class="auto-row">
         <label>{{ tt("intervalLabel") }}</label>

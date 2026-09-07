@@ -110,6 +110,9 @@ pub struct Settings {
     /// UI language: zh | en
     #[serde(default = "default_language")]
     pub language: String,
+    /// Launch at user login (XDG autostart on Linux).
+    #[serde(default = "default_false")]
+    pub auto_start: bool,
     /// Active routing profile id used by rule mode; None => built-in
     /// bypass-mainland profile.
     #[serde(default)]
@@ -131,6 +134,7 @@ impl Default for Settings {
             auto_update_subscriptions: false,
             auto_update_minutes: default_auto_minutes(),
             language: default_language(),
+            auto_start: false,
             route_profile_id: None,
             selected_by_group: Default::default(),
         }
