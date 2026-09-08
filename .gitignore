@@ -5,3 +5,4 @@ core/nekos-core
 core/bin/
 *.log
 .DS_Store
+src-tauri/binaries/

@@ -52,7 +52,7 @@
 ## P4 — 平台与发布
 - [ ] Windows 适配：系统代理（HKCU WinINET 注册表 + InternetSetOption 广播，代码已落地 [2026-09-08]）；自启（HKCU Run）已落地；余 wintun、UAC 提权重启 core、NSIS/MSI（需 Windows 真机验证）
 - [ ] macOS 适配：系统代理（networksetup 逐服务设置 + osascript 管理员回退，代码已落地 [2026-09-08]）；自启（LaunchAgent + launchctl）已落地；余 TUN 提权提示与真机验证
-- [ ] 打包与发布：tauri bundler（deb/rpm/AppImage → NSIS → dmg）+ GitHub Actions 矩阵 + core 交叉编译 sidecar 布局（图标集 icns/ico 与 bundle targets 已备好，bundle.active 保持 false 待 CI/发布流程启用）
+- [ ] 打包与发布：tauri bundler（deb/rpm/AppImage → NSIS → dmg）+ GitHub Actions 矩阵 + core 交叉编译 sidecar 布局已备好：pack.sh（core sidecar 交叉编译 + tauri bundle，打包时经 --config 临时开启 bundle.active）；图标集 icns/ico 就绪；余 CI 矩阵与各 OS 真机构建验证
 - [x] i18n（zh-CN/en）：组件内双语文案 + 设置项即时切换已落地 [2026-09-08]；主题未做
 - [ ] 自动更新（tauri updater + core 二进制随版本）
 
