@@ -34,7 +34,6 @@
       "icons/icon.ico"
     ],
     "category": "Network",
-    "shortDescription": "nekos sing-box GUI client",
-    "externalBin": ["binaries/nekos-core"]
+    "shortDescription": "nekos sing-box GUI client"
   }
 }

@@ -16,8 +16,9 @@
 #   bundle       → src-tauri/target/release/bundle/{deb,rpm,appimage,nsis,dmg}
 #
 # 说明:
-#   - tauri.conf.json 中 bundle.active 保持 false；脚本在打包时用 `tauri build --config`
-#     临时开启，仓库默认配置不动，`tauri dev` / `build.sh release` 不受影响。
+#   - tauri.conf.json 中 bundle.active 保持 false，externalBin 也不写入默认配置（tauri-build
+#     编译期会无条件校验 externalBin 文件存在，dev/release 一视同仁）；脚本在打包时用
+#     `tauri build --config` 一并注入两者，仓库默认配置不动，`tauri dev` / `build.sh release` 不受影响。
 #   - bundle 只能在对应 OS 上生成（linux→deb/rpm/AppImage，macOS→dmg，Windows→nsis）；
 #     脚本按当前 OS 选默认列表。core sidecar 可在这台机器上用 `./pack.sh core` 交叉预编译。
 #   - 需要 go、node/npm、rust 及目标平台依赖。
@@ -120,7 +121,10 @@ else
 fi
 
 log "tauri bundle (os=$OS, triple=$TRIPLE, bundles=${bundles[*]})"
-args=(--config '{"bundle":{"active":true}}')
+# bundle-only 配置（active + externalBin sidecar）与 tauri.conf.json 默认配置解耦:
+# tauri-build 在编译期无条件校验 externalBin 对应文件是否存在（dev/release 同），
+# 而 core sidecar 只在打包前由 build_core_sidecar 产出 —— 故 externalBin 只在打包时注入。
+args=(--config '{"bundle":{"active":true,"externalBin":["binaries/nekos-core"]}}')
 [ -n "${NEKOS_CONFIG_EXTRA:-}" ] && args+=(--config "$NEKOS_CONFIG_EXTRA")
 args+=(--bundles "${bundles[@]}")
 
