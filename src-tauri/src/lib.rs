@@ -8,10 +8,13 @@ mod db;
 mod runtime;
 mod subscribe;
 mod sysproxy;
+#[cfg(target_os = "linux")]
+mod tray_linux;
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use db::{Db, NewNode, Settings};
 use runtime::LogEntry;
@@ -1614,6 +1617,79 @@ async fn subscribe(
     })
 }
 
+// ---- tray click handling -------------------------------------------------
+
+/// How close two left clicks on the tray icon must be to count as a double
+/// click (Windows double-click time).
+const TRAY_DOUBLE_CLICK: Duration = Duration::from_millis(400);
+
+/// AppIndicator/StatusNotifier on Linux has no native double-click event, so
+/// clicks are timed here. `gen` invalidates deferred single-click actions
+/// when a second click turns the gesture into a double click.
+#[derive(Default)]
+struct TrayClicks {
+    last: Mutex<Option<Instant>>,
+    gen: AtomicU64,
+}
+
+fn tray_show(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
+fn tray_is_visible(app: &tauri::AppHandle) -> bool {
+    app.get_webview_window("main")
+        .and_then(|w| w.is_visible().ok())
+        .unwrap_or(false)
+}
+
+/// Double click: open the window when hidden, hide it back to the tray when
+/// visible.
+fn tray_toggle(app: &tauri::AppHandle) {
+    if tray_is_visible(app) {
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.hide();
+        }
+    } else {
+        tray_show(app);
+    }
+}
+
+/// One "primary activation" of the tray icon (a left button click on
+/// Windows/macOS, an SNI `activate` signal on Linux). A single activation
+/// shows & focuses the window; a second activation within
+/// [`TRAY_DOUBLE_CLICK`] toggles it (hide when visible, show when hidden).
+fn on_tray_primary_activation(app: &tauri::AppHandle, clicks: &Arc<TrayClicks>) {
+    let now = Instant::now();
+    let (is_double, gen) = {
+        let mut last = clicks.last.lock().unwrap();
+        let is_double = last.is_some_and(|t| now.duration_since(t) <= TRAY_DOUBLE_CLICK);
+        *last = Some(now);
+        let gen = clicks.gen.fetch_add(1, Ordering::SeqCst) + 1;
+        (is_double, gen)
+    };
+    if is_double {
+        // Double activation: open or hide the window.
+        tray_toggle(app);
+    } else if tray_is_visible(app) {
+        // Already shown: a plain activation just focuses.
+        tray_show(app);
+    } else {
+        // Hidden: defer the show past the double-activation window; a second
+        // activation supersedes it via `gen`.
+        let clicks = clicks.clone();
+        let app = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(TRAY_DOUBLE_CLICK + Duration::from_millis(30));
+            if clicks.gen.load(Ordering::SeqCst) == gen {
+                tray_show(&app);
+            }
+        });
+    }
+}
+
 // ---- app bootstrap ------------------------------------------------------
 
 pub fn run() {
@@ -1639,20 +1715,15 @@ pub fn run() {
                 .default_window_icon()
                 .cloned()
                 .unwrap_or_else(|| tauri::include_image!("icons/icon.png"));
-            let show = MenuItem::with_id(handle, "show", "显示主界面", true, None::<&str>)?;
+            let toggle = MenuItem::with_id(handle, "toggle", "显示/隐藏主界面", true, None::<&str>)?;
             let quit = MenuItem::with_id(handle, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(handle, &[&show, &quit])?;
+            let menu = Menu::with_items(handle, &[&toggle, &quit])?;
             let _tray = TrayIconBuilder::new()
                 .icon(tray_icon)
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {
-                    "show" => {
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
-                        }
-                    }
+                    "toggle" => tray_toggle(app),
                     "quit" => {
                         let state = app.state::<AppState>();
                         state.quitting.store(true, Ordering::SeqCst);
@@ -1661,20 +1732,24 @@ pub fn run() {
                     }
                     _ => {}
                 })
-                .on_tray_icon_event(|tray, event| {
-                    if let tauri::tray::TrayIconEvent::Click {
-                        button: tauri::tray::MouseButton::Left,
-                        button_state: tauri::tray::MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        if let Some(w) = tray.app_handle().get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
+                .on_tray_icon_event({
+                    let clicks = Arc::new(TrayClicks::default());
+                    move |tray, event| {
+                        if let tauri::tray::TrayIconEvent::Click {
+                            button: tauri::tray::MouseButton::Left,
+                            button_state: tauri::tray::MouseButtonState::Up,
+                            ..
+                        } = event
+                        {
+                            on_tray_primary_activation(tray.app_handle(), &clicks);
                         }
                     }
                 })
                 .build(app)?;
+            // tray-icon emits no icon-click events on Linux; wire the
+            // appindicator `activate` signal so tray clicks work there too.
+            #[cfg(target_os = "linux")]
+            tray_linux::connect(handle, &_tray);
             Ok(())
         })
         .on_window_event(|window, event| {
