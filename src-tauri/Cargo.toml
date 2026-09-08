@@ -35,6 +35,11 @@ tauri-plugin-clipboard-manager = "2.3.3"
 # (tray-icon emits no icon-click events on Linux).
 glib = "0.18"
 
+[target.'cfg(target_os = "windows")'.dependencies]
+# System proxy (WinINET keys + broadcast) and HKCU Run autostart.
+winreg = "0.52"
+windows-sys = { version = "0.61", features = ["Win32_Networking_WinInet"] }
+
 # Vendored tao 0.36.0 (as 0.35.99) until tauri >= 2.12 ships tao ^0.36 —
 # see vendor/tao/Cargo.toml header. Drop when upgrading past that.
 [patch.crates-io]
