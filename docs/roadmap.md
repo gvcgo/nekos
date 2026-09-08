@@ -46,6 +46,7 @@
 ## P3 — 桌面集成
 - [ ] 托盘菜单增强（快速切节点/测速/模式）
 - [x] 开机自启（XDG autostart）与关闭最小化到托盘（托盘化见 P0）：开机自启开关已落地（写入 `~/.config/autostart`，设置页即时生效，Wayland/X11 均可用）；全局热键不提供（Wayland 无法 X 抓键）[2026-09-08]
+- [x] 托盘恢复后标题栏按钮失效（Linux/Wayland，tao#1046/#1299 = tauri#15460）：vendor tao 0.36.0 为 0.35.99 走 `[patch.crates-io]`，随 tauri ≥ 2.12（tao ^0.36）后移除 vendor/tao 与 patch [2026-09-08]
 - [ ] 通知（订阅更新失败/断线提醒）
 
 ## P4 — 平台与发布

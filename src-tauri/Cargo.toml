@@ -29,3 +29,8 @@ parking_lot = "0.12"
 tokio = { version = "1", features = ["time"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 tauri-plugin-clipboard-manager = "2.3.3"
+
+# Vendored tao 0.36.0 (as 0.35.99) until tauri >= 2.12 ships tao ^0.36 —
+# see vendor/tao/Cargo.toml header. Drop when upgrading past that.
+[patch.crates-io]
+tao = { path = "vendor/tao" }
