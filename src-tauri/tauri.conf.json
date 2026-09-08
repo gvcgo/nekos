@@ -33,7 +33,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "category": "Network",
+    "category": "Utility",
     "shortDescription": "nekos sing-box GUI client"
   }
 }

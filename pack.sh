@@ -9,7 +9,7 @@
 # 环境变量:
 #   NEKOS_ARCH         覆盖 core 的 GOARCH（amd64|arm64）；默认取当前机器
 #   NEKOS_BUNDLES      覆盖 tauri 打包类型（如 "deb rpm" / "nsis" / "dmg app"）；默认按 OS 取
-#   NEKOS_CONFIG_EXTRA 追加合并进 tauri 配置的 JSON（如 '{"bundle":{"category":"Network"}}'）
+#   NEKOS_CONFIG_EXTRA 追加合并进 tauri 配置的 JSON（如 '{"bundle":{"category":"Utility"}}'）
 #
 # 产物位置:
 #   core sidecar → src-tauri/binaries/nekos-core-<rust-triple>[.exe]（tauri externalBin 命名约定）
