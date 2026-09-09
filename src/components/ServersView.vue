@@ -214,6 +214,9 @@ const status = ref<CoreStatusView>({ running: false, proxy_enabled: false });
 /** Node most recently picked inside the All aggregate view (owning group +
  *  id). Drives the ● highlight there and the session the toolbar Start uses. */
 const allCurrent = ref<{ group: number; id: string } | null>(null);
+/** Node that was selected and started last (row group + id): its remark
+ *  stays terminal-green across views until another node is started. */
+const activeNode = ref<{ group: number; id: string } | null>(null);
 
 const importText = ref("");
 const importBusy = ref(false);
@@ -297,6 +300,16 @@ async function loadAll() {
 async function reloadNodes() {
   const id = currentGroupId();
   nodes.value = await nodesList(id);
+  // Drop the green "started" mark once its row is gone from this view
+  // (All lists every group, so absence there means the node is gone).
+  const a = activeNode.value;
+  if (
+    a &&
+    !nodes.value.some((n) => n.group_id === a.group && n.id === a.id) &&
+    (isAllView() || a.group === id)
+  ) {
+    activeNode.value = null;
+  }
   // restore persisted latency results
   try {
     const rows = await latencyList(id);
@@ -388,6 +401,12 @@ function isRowCurrent(n: Node): boolean {
     return !!c && c.group === n.group_id && c.id === n.id;
   }
   return n.id === selectedNodeId();
+}
+
+/** True for the node that was selected and started (remark kept green). */
+function isActiveNode(n: Node): boolean {
+  const a = activeNode.value;
+  return !!a && a.group === n.group_id && a.id === n.id;
 }
 
 const isVirtualCurrent = computed(() => (currentGroup()?.kind ?? "normal") !== "normal");
@@ -601,6 +620,7 @@ async function toggleStart() {
       // "All" has no session of its own: start the owning group of the
       // node picked here, falling back to the first visible node.
       let target = currentGroupId();
+      let started: { group: number; id: string } | undefined;
       if (isAllView()) {
         let n = allCurrent.value
           ? nodes.value.find(
@@ -616,10 +636,28 @@ async function toggleStart() {
           await loadSettings();
           allCurrent.value = { group: n.group_id, id: n.id };
           target = g;
+          started = { group: n.group_id, id: n.id };
+        }
+      } else {
+        // Real group/strategy views start under the view group. A normal
+        // group with no explicit selection gets the first row persisted
+        // (mirrors the core fallback) so the started node is marked.
+        const sel = settings.value?.selected_by_group[target];
+        if (!isVirtualCurrent && !sel) {
+          const first = visibleNodes.value[0];
+          if (first) {
+            await setNodeCurrent(target, first.id);
+            await loadSettings();
+            started = { group: first.group_id, id: first.id };
+          }
+        } else if (sel) {
+          const m = nodes.value.find((x) => x.id === sel);
+          if (m) started = { group: m.group_id, id: m.id };
         }
       }
       const run = await coreStart(target);
       status.value = run.status;
+      if (started) activeNode.value = started;
     }
   } catch (e) {
     err.value = String(e);
@@ -644,6 +682,7 @@ async function pickNode(n: Node) {
       const run = await coreStart(g);
       status.value = run.status;
       switchMsg.value = tt("switchedProxy", { remark: n.remark });
+      activeNode.value = { group: n.group_id, id: n.id };
     } catch (e) {
       err.value = String(e);
     } finally {
@@ -667,6 +706,7 @@ async function startNode(n: Node) {
     const run = await coreStart(g);
     status.value = run.status;
     switchMsg.value = tt("startedNode", { remark: n.remark });
+    activeNode.value = { group: n.group_id, id: n.id };
   } catch (e) {
     err.value = String(e);
   } finally {
@@ -822,7 +862,7 @@ onBeforeUnmount(() => {
           <tr><th></th><th>{{ tt("thType") }}</th><th>{{ tt("thRemark") }}</th><th>{{ tt("thLatency") }}</th><th>{{ tt("thOps") }}</th></tr>
         </thead>
         <tbody>
-          <tr v-for="n in sortedNodes" :key="n.id" :class="{ current: isRowCurrent(n) }">
+          <tr v-for="n in sortedNodes" :key="n.id" :class="{ current: isRowCurrent(n), active: isActiveNode(n) }">
             <td class="sel" @click="pickNode(n)">{{ isRowCurrent(n) ? "●" : "○" }}</td>
             <td><code>{{ n.type }}</code></td>
             <td class="remark" @click="pickNode(n)">{{ n.remark }}</td>
@@ -1004,6 +1044,12 @@ table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th, td { text-align: start; padding: 6px 8px; border-top: 1px solid var(--border); }
 th { font-size: 11px; text-transform: uppercase; opacity: 0.7; }
 tr.current td { background: rgba(59,130,246,0.08); }
+/* The started node's remark reads in terminal green, independent of the
+   current-selection highlight. */
+tr.active td.remark { color: #15803d; font-weight: 600; }
+@media (prefers-color-scheme: dark) {
+  tr.active td.remark { color: #4ade80; }
+}
 .sel { cursor: pointer; width: 28px; text-align: center; color: var(--accent); }
 .remark { cursor: pointer; }
 .ops { white-space: nowrap; text-align: end; }
