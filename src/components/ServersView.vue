@@ -68,9 +68,9 @@ const zhL = {
   thLatency: "延迟",
   thOps: "操作",
   test: "测速",
-  copy: "复制",
-  copyTip: "复制分享链接",
-  qrTip: "二维码分享",
+  share: "Share",
+  shareTip: "分享节点链接（二维码弹窗内可复制）",
+  quickStartTip: "选择该节点并快速启动",
   remove: "删除",
   joinIn: "＋入组",
   joinTip: "把该策略组加入其它分组（作为伪节点）",
@@ -102,9 +102,8 @@ const zhL = {
   promptNewGroup: "新分组名称",
   promptRename: "重命名分组",
   qrCopied: "链接已复制到剪贴板",
-  copyOk: "已复制「{remark}」链接",
   copyFail: "复制失败",
-  copyFailManual: "复制失败（请使用 QR 弹窗内手动复制）",
+  startedNode: "已选择并启动「{remark}」",
   switchedProxy: "已切换代理到「{remark}」",
   proxyOnMsg: "系统代理已开启（关闭「停止」或再点开关即可还原）",
   close: "关闭",
@@ -152,9 +151,9 @@ const enL: Record<DictKeys, string> = {
   thLatency: "Latency",
   thOps: "Actions",
   test: "Test",
-  copy: "Copy",
-  copyTip: "Copy share link",
-  qrTip: "Share via QR code",
+  share: "Share",
+  shareTip: "Share this node (copy is available in the QR dialog)",
+  quickStartTip: "Select this node and start quickly",
   remove: "Delete",
   joinIn: "+Join",
   joinTip: "Mount this strategy group into other groups (as a pseudo node)",
@@ -190,9 +189,8 @@ const enL: Record<DictKeys, string> = {
   promptNewGroup: "New group name",
   promptRename: "Rename group",
   qrCopied: "Link copied to clipboard",
-  copyOk: 'Copied link for "{remark}"',
   copyFail: "Copy failed",
-  copyFailManual: "Copy failed (use manual copy inside the QR dialog)",
+  startedNode: 'Selected and started "{remark}"',
   switchedProxy: 'Switched proxy to "{remark}"',
   proxyOnMsg: "System proxy enabled (press Stop or toggle again to restore)",
   close: "Close",
@@ -523,18 +521,6 @@ async function copyQrLink() {
   shareMsg.value = ok ? tt("qrCopied") : tt("copyFail");
 }
 
-async function copyNodeLink(groupId: number, nodeId: string, remark: string) {
-  shareMsg.value = "";
-  err.value = "";
-  try {
-    const link = await nodeEncode(groupId, nodeId);
-    const ok = await copyText(link);
-    shareMsg.value = ok ? tt("copyOk", { remark }) : tt("copyFailManual");
-  } catch (e) {
-    err.value = String(e);
-  }
-}
-
 async function showNodeQr(groupId: number, nodeId: string, remark: string) {
   qrBusy.value = true;
   err.value = "";
@@ -588,6 +574,26 @@ async function pickNode(nodeId: string) {
       startBusy.value = false;
       await refreshStatus();
     }
+  }
+}
+
+async function startNode(nodeId: string) {
+  startBusy.value = true;
+  err.value = "";
+  switchMsg.value = "";
+  try {
+    await setNodeCurrent(currentGroupId(), nodeId);
+    await loadSettings();
+    const run = await coreStart();
+    status.value = run.status;
+    switchMsg.value = tt("startedNode", {
+      remark: nodes.value.find((n) => n.id === nodeId)?.remark ?? nodeId,
+    });
+  } catch (e) {
+    err.value = String(e);
+  } finally {
+    startBusy.value = false;
+    await refreshStatus();
   }
 }
 
@@ -744,10 +750,10 @@ onBeforeUnmount(() => {
             <td class="remark" @click="pickNode(n.id)">{{ n.remark }}</td>
             <td :class="delayMap[n.id]?.error ? 'bad' : ''">{{ delayText(n) }}</td>
             <td class="ops">
+              <button class="ghost" :disabled="startBusy" :title="tt('quickStartTip')" @click="startNode(n.id)">{{ tt("start") }}</button>
               <button class="ghost" :disabled="!!delayMap[n.id] && delayMap[n.id]!.delay_ms == null && !delayMap[n.id]!.error" @click="testNode(n.id)">{{ tt("test") }}</button>
               <template v-if="n.type !== 'strategy'">
-                <button class="ghost" :disabled="qrBusy" :title="tt('copyTip')" @click="copyNodeLink(n.group_id, n.id, n.remark)">{{ tt("copy") }}</button>
-                <button class="ghost" :title="tt('qrTip')" @click="showNodeQr(n.group_id, n.id, n.remark)">QR</button>
+                <button class="ghost" :disabled="qrBusy" :title="tt('shareTip')" @click="showNodeQr(n.group_id, n.id, n.remark)">{{ tt("share") }}</button>
                 <button v-if="!isVirtualCurrent" class="ghost danger" @click="removeNode(n.id)">{{ tt("remove") }}</button>
               </template>
               <template v-else>
