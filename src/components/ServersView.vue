@@ -215,7 +215,8 @@ const settings = ref<Settings | null>(null);
 const nodes = ref<Node[]>([]);
 const status = ref<CoreStatusView>({ running: false, proxy_enabled: false });
 /** Node most recently picked inside the All aggregate view (owning group +
- *  id). Drives the ● highlight there and the session the toolbar Start uses. */
+ *  id). Drives the selection background there and which node the toolbar
+ *  Start falls back to. */
 const allCurrent = ref<{ group: number; id: string } | null>(null);
 /** Node that was selected and started last (row group + id): its remark
  *  stays terminal-green across views until another node is started. */
@@ -670,28 +671,16 @@ async function toggleStart() {
   }
 }
 
+/// Selection only: remember the node as this group's current pick. It does
+/// NOT touch the running proxy and does NOT move the green "started" mark —
+/// that only changes when a node is actually started/switched (Switch
+/// button or the toolbar start).
 async function pickNode(n: Node) {
   const g = runGroupFor(n);
   await setNodeCurrent(g, n.id);
   await loadSettings();
   if (isAllView()) {
     allCurrent.value = { group: n.group_id, id: n.id };
-  }
-  if (status.value.running) {
-    // live switch: rebuild the core with the new selection
-    startBusy.value = true;
-    switchMsg.value = "";
-    try {
-      const run = await coreStart(g);
-      status.value = run.status;
-      switchMsg.value = tt("switchedProxy", { remark: n.remark });
-      activeNode.value = { group: n.group_id, id: n.id };
-    } catch (e) {
-      err.value = String(e);
-    } finally {
-      startBusy.value = false;
-      await refreshStatus();
-    }
   }
 }
 
@@ -880,11 +869,10 @@ onBeforeUnmount(() => {
       </div>
       <table>
         <thead>
-          <tr><th></th><th>{{ tt("thType") }}</th><th>{{ tt("thRemark") }}</th><th>{{ tt("thLatency") }}</th><th>{{ tt("thOps") }}</th></tr>
+          <tr><th>{{ tt("thType") }}</th><th>{{ tt("thRemark") }}</th><th>{{ tt("thLatency") }}</th><th>{{ tt("thOps") }}</th></tr>
         </thead>
         <tbody>
           <tr v-for="n in sortedNodes" :key="n.id" :class="{ current: isRowCurrent(n), active: isActiveNode(n) }">
-            <td class="sel" @click="pickNode(n)">{{ isRowCurrent(n) ? "●" : "○" }}</td>
             <td><code>{{ n.type }}</code></td>
             <td class="remark" @click="pickNode(n)">{{ n.remark }}</td>
             <td :class="delayMap[n.id]?.error ? 'bad' : ''">{{ delayText(n) }}</td>
