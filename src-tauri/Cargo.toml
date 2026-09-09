@@ -34,6 +34,8 @@ tauri-plugin-clipboard-manager = "2.3.3"
 # Used by src/tray_linux.rs to connect the libappindicator `activate` signal
 # (tray-icon emits no icon-click events on Linux).
 glib = "0.18"
+# Orphan daemon reaping (kill(2) on /proc-scanned pids at startup).
+libc = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 # System proxy (WinINET keys + broadcast) and HKCU Run autostart.

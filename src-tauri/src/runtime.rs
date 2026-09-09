@@ -9,12 +9,20 @@
 //! rebuild path (core.start while running → Manager.Replace), not a
 //! process kill + respawn. The daemon's stderr is streamed into a log ring
 //! exactly as before.
+//!
+//! Lifecycle hardening: the daemon is spawned with `--parent-pid <gui>` and
+//! exits by itself if it gets reparented (the GUI died without running
+//! shutdown), and the app reaps any orphaned `nekos-core serve` processes at
+//! startup — an orphan would otherwise keep the inbound port and the
+//! system-proxy route, blocking a fresh GUI from starting or switching nodes.
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use parking_lot::Mutex;
@@ -123,12 +131,18 @@ impl Daemon {
                 token: self.token.clone(),
             });
         }
-        let mut child = Command::new(bin)
-            .arg("serve")
+        let mut cmd = Command::new(bin);
+        cmd.arg("serve")
             .arg("--rpc")
             .arg("127.0.0.1:0")
             .arg("--token")
-            .arg(&self.token)
+            .arg(&self.token);
+        // The daemon watches this pid and exits if it gets reparented (the
+        // GUI died without running shutdown): a crashed GUI must not leave
+        // an orphaned control process holding the inbound port.
+        #[cfg(unix)]
+        cmd.arg("--parent-pid").arg(std::process::id().to_string());
+        let mut child = cmd
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -289,6 +303,84 @@ fn capture_stderr(child: &mut Child) -> String {
     out
 }
 
+/// Kill `nekos-core serve` control processes that outlived their GUI
+/// (startup cleanup, Linux). A crashed GUI leaves its daemon — and the
+/// sing-box instance inside it, which still owns the inbound port — running;
+/// a fresh GUI would otherwise fail to start or switch nodes. This is
+/// belt-and-braces next to the daemon's own parent-watch: it also clears
+/// daemons started by older core builds that predate the watch flag.
+/// No-op elsewhere.
+pub fn reap_orphan_daemons() {
+    #[cfg(target_os = "linux")]
+    {
+        use std::fs;
+
+        fn matches_core_serve(pid: i64) -> bool {
+            let Ok(raw) = fs::read(format!("/proc/{pid}/cmdline")) else {
+                return false;
+            };
+            let mut is_core = false;
+            let mut has_serve = false;
+            for arg in raw.split(|&b| b == 0) {
+                if arg.is_empty() {
+                    continue;
+                }
+                if arg == b"serve" {
+                    has_serve = true;
+                }
+                if arg.ends_with(b"nekos-core") {
+                    is_core = true;
+                }
+            }
+            is_core && has_serve
+        }
+
+        let mut pids: Vec<i32> = Vec::new();
+        if let Ok(entries) = fs::read_dir("/proc") {
+            for entry in entries.flatten() {
+                let Ok(pid) = entry.file_name().to_string_lossy().parse::<i64>() else {
+                    continue;
+                };
+                if pid == std::process::id() as i64 {
+                    continue;
+                }
+                if matches_core_serve(pid) {
+                    pids.push(pid as i32);
+                }
+            }
+        }
+        if pids.is_empty() {
+            return;
+        }
+        for pid in &pids {
+            unsafe {
+                libc::kill(*pid, libc::SIGTERM);
+            }
+        }
+        // Give them a moment to shut down, then force-kill survivors.
+        std::thread::sleep(Duration::from_millis(300));
+        for pid in pids {
+            unsafe {
+                if libc::kill(pid, 0) == 0 {
+                    libc::kill(pid, libc::SIGKILL);
+                }
+            }
+        }
+    }
+}
+
+/// Serializes tests that spawn or kill real `nekos-core serve` processes so
+/// the orphan reaper never kills another test's live daemon (cargo runs the
+/// #[test]s of a binary in parallel threads).
+#[cfg(test)]
+pub(crate) static DAEMON_TEST_LOCK: LazyLock<parking_lot::Mutex<()>> =
+    LazyLock::new(|| parking_lot::Mutex::new(()));
+
+#[cfg(test)]
+pub(crate) fn daemon_test_lock<'a>() -> parking_lot::MutexGuard<'a, ()> {
+    DAEMON_TEST_LOCK.lock()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,5 +403,91 @@ mod tests {
         );
         assert_eq!(strip_ansi("plain"), "plain");
         assert_eq!(strip_ansi("\u{1b}[1;31merror\u{1b}[0m"), "error");
+    }
+
+    /// The startup reaper must kill orphaned `nekos-core serve` daemons
+    /// (left by a crashed GUI) and leave unrelated processes alone.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn orphan_reap_only_kills_core_daemons() {
+        let _g = crate::runtime::daemon_test_lock();
+        use std::path::PathBuf;
+        let bin = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../core/bin/nekos-core");
+        assert!(
+            bin.is_file(),
+            "core binary missing — run ./build.sh core first"
+        );
+        let dir = std::env::temp_dir().join(format!("nekos-reap-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let daemon_pid = dir.join("daemon.pid");
+        let sleeper_pid = dir.join("sleeper.pid");
+
+        // Orphan a real daemon: the wrapper shell exits right after
+        // backgrounding it, so the daemon is reparented (parent gone).
+        let script = format!(
+            "'{}' serve --rpc 127.0.0.1:0 --token reap-test >/dev/null 2>&1 & echo $! > '{}'",
+            bin.display(),
+            daemon_pid.display()
+        );
+        assert!(std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&script)
+            .status()
+            .unwrap()
+            .success());
+        // An unrelated orphaned process that must survive the reaper.
+        let script = format!(
+            "sleep 30 >/dev/null 2>&1 & echo $! > '{}'",
+            sleeper_pid.display()
+        );
+        assert!(std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&script)
+            .status()
+            .unwrap()
+            .success());
+
+        let read_pid = |p: &std::path::Path| -> i32 {
+            std::fs::read_to_string(p)
+                .unwrap_or_else(|_| panic!("pid file missing: {}", p.display()))
+                .trim()
+                .parse()
+                .expect("pid number")
+        };
+        let alive = |pid: i32| std::path::Path::new(&format!("/proc/{pid}")).exists();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if daemon_pid.exists()
+                && sleeper_pid.exists()
+                && alive(read_pid(&daemon_pid))
+                && alive(read_pid(&sleeper_pid))
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "test processes did not come up"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let dpid = read_pid(&daemon_pid);
+        let spid = read_pid(&sleeper_pid);
+
+        super::reap_orphan_daemons();
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while alive(dpid) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "orphaned daemon survived reaper"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(alive(spid), "reaper killed an unrelated process");
+        let _ = std::process::Command::new("kill")
+            .arg("-9")
+            .arg(spid.to_string())
+            .status();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

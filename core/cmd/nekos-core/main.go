@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"runtime"
 	"runtime/debug"
 	"strconv"
 	"syscall"
@@ -186,6 +187,7 @@ func cmdRun() error {
 func cmdServe(args []string) error {
 	listen := "127.0.0.1:0"
 	token := ""
+	parentPid := 0
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--rpc":
@@ -200,6 +202,16 @@ func cmdServe(args []string) error {
 				return fmt.Errorf("--token needs a value")
 			}
 			token = args[i]
+		case "--parent-pid":
+			i++
+			if i >= len(args) {
+				return fmt.Errorf("--parent-pid needs a value")
+			}
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n <= 0 {
+				return fmt.Errorf("invalid --parent-pid %q", args[i])
+			}
+			parentPid = n
 		default:
 			return fmt.Errorf("unknown flag %q", args[i])
 		}
@@ -222,11 +234,36 @@ func cmdServe(args []string) error {
 	})
 	fmt.Println(string(out))
 
+	// Die with the controlling GUI: a crashed orchestrator must not leave
+	// this daemon (and the sing-box instance inside it, which owns the
+	// inbound port and system-proxy route) running as an orphan that a new
+	// GUI cannot take over. The orchestrator passes its own pid; once this
+	// process has been reparented (direct parent exited) it is orphaned and
+	// shuts down. Windows does not reparent on parent death, so the check
+	// is skipped there (ppid stays stale).
+	if parentPid > 0 && runtime.GOOS != "windows" {
+		go watchParent(parentPid)
+	}
+
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
 	_ = srv.Close()
 	return m.Stop()
+}
+
+// watchParent polls until this process is no longer a direct child of pid
+// (i.e. its parent exited and it got reparented), then exits so the daemon
+// never outlives the GUI that started it.
+func watchParent(parent int) {
+	t := time.NewTicker(2 * time.Second)
+	defer t.Stop()
+	for range t.C {
+		if os.Getppid() != parent {
+			fmt.Fprintf(os.Stderr, "nekos-core: controlling process (pid %d) exited; shutting down\n", parent)
+			os.Exit(0)
+		}
+	}
 }
 
 func cmdTest(args []string) error {

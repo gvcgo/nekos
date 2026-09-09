@@ -396,6 +396,7 @@ mod tests {
     /// `core/bin/nekos-core` (built with ./build.sh core).
     #[test]
     fn rpc_lifecycle_via_real_daemon() {
+        let _g = crate::runtime::daemon_test_lock();
         let ctl = CoreCtl::new();
         // First call spawns the daemon lazily and parses over RPC.
         let parsed = ctl
@@ -437,6 +438,7 @@ mod tests {
     /// The daemon must reject requests without the right bearer token.
     #[test]
     fn rpc_auth_enforced() {
+        let _g = crate::runtime::daemon_test_lock();
         let ctl = CoreCtl::new();
         let conn = ctl.conn().expect("daemon conn");
         let wrong = RpcConn {

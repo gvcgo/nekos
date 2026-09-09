@@ -53,6 +53,32 @@ mod linux_impl {
     pub fn disable() -> Result<(), String> {
         gsettings(&["set", "org.gnome.system.proxy", "mode", "none"])
     }
+
+    fn gsettings_get(schema: &str, key: &str) -> Option<String> {
+        let out = std::process::Command::new("gsettings")
+            .args(["get", schema, key])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let s = String::from_utf8_lossy(&out.stdout);
+        Some(s.trim().trim_matches('\'').to_string())
+    }
+
+    /// True when the GNOME proxy is routed to 127.0.0.1:port in "manual"
+    /// mode — i.e. a route this app enabled and a crashed run could not
+    /// restore. Startup uses this to un-break traffic after an orphaned
+    /// core (whose port this points at) has been reaped.
+    pub fn leftover_at(port: u16) -> bool {
+        let mode = gsettings_get("org.gnome.system.proxy", "mode").unwrap_or_default();
+        if mode != "manual" {
+            return false;
+        }
+        let host = gsettings_get("org.gnome.system.proxy.http", "host").unwrap_or_default();
+        let port_s = gsettings_get("org.gnome.system.proxy.http", "port").unwrap_or_default();
+        host == "127.0.0.1" && port_s == port.to_string()
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -225,7 +251,7 @@ mod mac_impl {
 }
 
 #[cfg(target_os = "linux")]
-pub use linux_impl::{disable, enable};
+pub use linux_impl::{disable, enable, leftover_at};
 #[cfg(target_os = "windows")]
 pub use win_impl::{disable, enable};
 #[cfg(target_os = "macos")]
@@ -239,6 +265,11 @@ pub fn enable(_port: u16) -> Result<(), String> {
 #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 pub fn disable() -> Result<(), String> {
     Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn leftover_at(_port: u16) -> bool {
+    false
 }
 
 #[cfg(test)]

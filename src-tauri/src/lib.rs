@@ -291,6 +291,13 @@ fn shutdown_all(state: &AppState) {
     }
 }
 
+/// Kill orphaned `nekos-core serve` control processes left behind by a
+/// crashed GUI (Linux). Called at startup so a fresh instance can bind the
+/// inbound port again and start/switch nodes. No-op where unimplemented.
+fn cleanup_stale_cores() {
+    runtime::reap_orphan_daemons();
+}
+
 // ---- basic commands ------------------------------------------------------
 
 #[tauri::command]
@@ -1731,10 +1738,18 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
+            // A crashed GUI can leave its control process (still holding the
+            // inbound port) and a system-proxy route behind — neither can a
+            // fresh instance start/switch until both are cleared.
+            cleanup_stale_cores();
             let handle = app.handle();
             let state = AppState::open(handle)?;
             let app_state = state.clone();
             app.manage(state);
+            #[cfg(target_os = "linux")]
+            if sysproxy::leftover_at(app_state.settings().port) {
+                let _ = sysproxy::disable();
+            }
             // subscription auto-refresh scheduler (runs while the app lives)
             tauri::async_runtime::spawn(auto_update_loop(app_state.clone()));
 
