@@ -70,7 +70,8 @@ const zhL = {
   test: "测速",
   share: "分享",
   shareTip: "分享节点链接（二维码弹窗内可复制）",
-  quickStartTip: "选择该节点并快速启动",
+  switchBtn: "切换",
+  switchTip: "未启动时直接启动该节点；已启动其它节点则先停止再启动",
   remove: "删除",
   joinIn: "＋入组",
   joinTip: "把该策略组加入其它分组（作为伪节点）",
@@ -153,7 +154,9 @@ const enL: Record<DictKeys, string> = {
   test: "Test",
   share: "Share",
   shareTip: "Share this node (copy is available in the QR dialog)",
-  quickStartTip: "Select this node and start quickly",
+  switchBtn: "Switch",
+  switchTip:
+    "Start this node if nothing is running; otherwise stop the running one first, then start this",
   remove: "Delete",
   joinIn: "+Join",
   joinTip: "Mount this strategy group into other groups (as a pseudo node)",
@@ -692,12 +695,28 @@ async function pickNode(n: Node) {
   }
 }
 
-async function startNode(n: Node) {
+/** Row "切换": with nothing running, start the node directly; if another
+ *  node is running, stop it first, then start this one. */
+async function switchNode(n: Node) {
+  const g = runGroupFor(n);
+  const a = activeNode.value;
+  if (status.value.running && a && a.group === n.group_id && a.id === n.id) {
+    // already the running node: nothing to stop/restart, keep it selected
+    await setNodeCurrent(g, n.id);
+    await loadSettings();
+    if (isAllView()) {
+      allCurrent.value = { group: n.group_id, id: n.id };
+    }
+    return;
+  }
+  const wasRunning = status.value.running;
   startBusy.value = true;
   err.value = "";
   switchMsg.value = "";
   try {
-    const g = runGroupFor(n);
+    if (wasRunning) {
+      status.value = await coreStop();
+    }
     await setNodeCurrent(g, n.id);
     await loadSettings();
     if (isAllView()) {
@@ -705,7 +724,9 @@ async function startNode(n: Node) {
     }
     const run = await coreStart(g);
     status.value = run.status;
-    switchMsg.value = tt("startedNode", { remark: n.remark });
+    switchMsg.value = tt(wasRunning ? "switchedProxy" : "startedNode", {
+      remark: n.remark,
+    });
     activeNode.value = { group: n.group_id, id: n.id };
   } catch (e) {
     err.value = String(e);
@@ -868,7 +889,7 @@ onBeforeUnmount(() => {
             <td class="remark" @click="pickNode(n)">{{ n.remark }}</td>
             <td :class="delayMap[n.id]?.error ? 'bad' : ''">{{ delayText(n) }}</td>
             <td class="ops">
-              <button class="ghost" :disabled="startBusy" :title="tt('quickStartTip')" @click="startNode(n)">{{ tt("start") }}</button>
+              <button class="ghost" :disabled="startBusy" :title="tt('switchTip')" @click="switchNode(n)">{{ tt("switchBtn") }}</button>
               <button class="ghost" :disabled="!!delayMap[n.id] && delayMap[n.id]!.delay_ms == null && !delayMap[n.id]!.error" @click="testNode(n)">{{ tt("test") }}</button>
               <template v-if="n.type !== 'strategy'">
                 <button class="ghost" :disabled="qrBusy" :title="tt('shareTip')" @click="showNodeQr(n.group_id, n.id, n.remark)">{{ tt("share") }}</button>
