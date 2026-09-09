@@ -10,16 +10,19 @@
 //! process kill + respawn. The daemon's stderr is streamed into a log ring
 //! exactly as before.
 //!
-//! Lifecycle hardening: the daemon is spawned with `--parent-pid <gui>` and
-//! exits by itself if it gets reparented (the GUI died without running
-//! shutdown), and the app reaps any orphaned `nekos-core serve` processes at
-//! startup — an orphan would otherwise keep the inbound port and the
-//! system-proxy route, blocking a fresh GUI from starting or switching nodes.
+//! Lifecycle hardening: the daemon is spawned with its stdin piped and the
+//! write end held by the GUI, so it gets EOF — and exits by itself — the
+//! moment the GUI dies, cleanly or crashed (cross-platform; Windows closes
+//! the inherited handle at process death, unix reparenting ends in the same
+//! EOF). Startup additionally reaps any orphaned `nekos-core serve`
+//! processes left by older builds or other means — an orphan would keep the
+//! inbound port and the system-proxy route, blocking a fresh GUI from
+//! starting or switching nodes.
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
-use std::process::{Child, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::LazyLock;
@@ -85,6 +88,9 @@ pub struct RpcConn {
 /// start/stop and on status reads).
 pub struct Daemon {
     child: Option<Child>,
+    /// Write end of the daemon's stdin, kept open for the app's lifetime:
+    /// the daemon self-exits on EOF (our death closes the pipe).
+    stdin: Option<ChildStdin>,
     /// Base URL like "http://127.0.0.1:41234"; Some once the daemon is up.
     url: Option<String>,
     token: String,
@@ -97,6 +103,7 @@ impl Daemon {
     pub fn new(token: String) -> Self {
         Daemon {
             child: None,
+            stdin: None,
             url: None,
             token,
             running: false,
@@ -111,6 +118,7 @@ impl Daemon {
         if let Some(child) = &mut self.child {
             if matches!(child.try_wait(), Ok(Some(_))) {
                 self.child = None;
+                self.stdin = None;
                 self.url = None;
                 self.running = false;
                 self.started_at = None;
@@ -131,19 +139,17 @@ impl Daemon {
                 token: self.token.clone(),
             });
         }
-        let mut cmd = Command::new(bin);
-        cmd.arg("serve")
+        let mut child = Command::new(bin)
+            .arg("serve")
             .arg("--rpc")
             .arg("127.0.0.1:0")
             .arg("--token")
-            .arg(&self.token);
-        // The daemon watches this pid and exits if it gets reparented (the
-        // GUI died without running shutdown): a crashed GUI must not leave
-        // an orphaned control process holding the inbound port.
-        #[cfg(unix)]
-        cmd.arg("--parent-pid").arg(std::process::id().to_string());
-        let mut child = cmd
-            .stdin(Stdio::null())
+            .arg(&self.token)
+            // Stdin keepalive: we hold the write end below for the app's
+            // lifetime. If this process dies (clean quit or crash), the
+            // pipe closes and the daemon's stdin watchdog sees EOF and
+            // exits — no orphaned control process holding the inbound port.
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -198,6 +204,7 @@ impl Daemon {
             });
         }
         self.child = Some(child);
+        self.stdin = self.child.as_mut().and_then(|c| c.stdin.take());
         self.url = Some(url.clone());
         self.running = false;
         self.started_at = None;
@@ -220,6 +227,7 @@ impl Daemon {
             let _ = child.kill();
             let _ = child.wait();
         }
+        self.stdin = None;
         self.url = None;
         self.running = false;
         self.started_at = None;
@@ -252,6 +260,7 @@ impl Daemon {
             let _ = child.kill();
             let _ = child.wait();
         }
+        self.stdin = None;
         self.url = None;
         self.running = false;
         self.started_at = None;
@@ -304,12 +313,11 @@ fn capture_stderr(child: &mut Child) -> String {
 }
 
 /// Kill `nekos-core serve` control processes that outlived their GUI
-/// (startup cleanup, Linux). A crashed GUI leaves its daemon — and the
-/// sing-box instance inside it, which still owns the inbound port — running;
-/// a fresh GUI would otherwise fail to start or switch nodes. This is
-/// belt-and-braces next to the daemon's own parent-watch: it also clears
-/// daemons started by older core builds that predate the watch flag.
-/// No-op elsewhere.
+/// (startup cleanup). A crashed GUI leaves its daemon — and the sing-box
+/// instance inside it, which still owns the inbound port — running; a fresh
+/// GUI would otherwise fail to start or switch nodes. Belt-and-braces next
+/// to the daemon's stdin keepalive: it also clears daemons started by older
+/// core builds or by other means.
 pub fn reap_orphan_daemons() {
     #[cfg(target_os = "linux")]
     {
@@ -366,6 +374,24 @@ pub fn reap_orphan_daemons() {
                 }
             }
         }
+    }
+
+    // macOS: pkill is standard; the pattern matches the daemon's argv only.
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("pkill")
+            .args(["-f", "nekos-core serve"])
+            .status();
+    }
+
+    // Windows: PowerShell mirrors the Linux command-line scan (matches any
+    // core binary name, so NEKOS_CORE overrides are covered too).
+    #[cfg(target_os = "windows")]
+    {
+        let script = "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'nekos-core.*serve' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }";
+        let _ = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", script])
+            .status();
     }
 }
 
@@ -489,5 +515,39 @@ mod tests {
             .arg(spid.to_string())
             .status();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The daemon must exit on its own once the controlling process dies:
+    /// the GUI holds the write end of the daemon's stdin, so closing it (a
+    /// crash closes all handles) delivers EOF and the watchdog shuts down.
+    #[test]
+    fn daemon_exits_when_stdin_closes() {
+        let _g = crate::runtime::daemon_test_lock();
+        let bin =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../core/bin/nekos-core");
+        assert!(bin.is_file(), "core binary missing — run ./build.sh core first");
+        let mut child = Command::new(&bin)
+            .args(["serve", "--rpc", "127.0.0.1:0", "--token", "stdin-watchdog-test"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn core");
+        std::thread::sleep(Duration::from_millis(800));
+        assert!(child.try_wait().unwrap().is_none(), "daemon did not start");
+        // Simulate GUI death: drop the write end of the daemon's stdin.
+        drop(child.stdin.take());
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Ok(Some(_)) = child.try_wait() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "daemon survived stdin EOF"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let _ = child.wait();
     }
 }

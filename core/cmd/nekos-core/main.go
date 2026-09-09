@@ -13,7 +13,6 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"runtime"
 	"runtime/debug"
 	"strconv"
 	"syscall"
@@ -187,7 +186,6 @@ func cmdRun() error {
 func cmdServe(args []string) error {
 	listen := "127.0.0.1:0"
 	token := ""
-	parentPid := 0
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--rpc":
@@ -202,16 +200,6 @@ func cmdServe(args []string) error {
 				return fmt.Errorf("--token needs a value")
 			}
 			token = args[i]
-		case "--parent-pid":
-			i++
-			if i >= len(args) {
-				return fmt.Errorf("--parent-pid needs a value")
-			}
-			n, err := strconv.Atoi(args[i])
-			if err != nil || n <= 0 {
-				return fmt.Errorf("invalid --parent-pid %q", args[i])
-			}
-			parentPid = n
 		default:
 			return fmt.Errorf("unknown flag %q", args[i])
 		}
@@ -234,15 +222,21 @@ func cmdServe(args []string) error {
 	})
 	fmt.Println(string(out))
 
-	// Die with the controlling GUI: a crashed orchestrator must not leave
-	// this daemon (and the sing-box instance inside it, which owns the
-	// inbound port and system-proxy route) running as an orphan that a new
-	// GUI cannot take over. The orchestrator passes its own pid; once this
-	// process has been reparented (direct parent exited) it is orphaned and
-	// shuts down. Windows does not reparent on parent death, so the check
-	// is skipped there (ppid stays stale).
-	if parentPid > 0 && runtime.GOOS != "windows" {
-		go watchParent(parentPid)
+	// Stdin keepalive watchdog: the orchestrator holds the write end of our
+	// stdin for as long as the GUI lives, so when that process dies — clean
+	// or crashed — the pipe closes and this read returns EOF, and the daemon
+	// (with the sing-box instance inside it) shuts down instead of lingering
+	// as an orphan that keeps the inbound port. Cross-platform (unix
+	// reparenting and Windows handle closure both end here). Skipped when
+	// stdin is an interactive terminal or /dev/null, so manual `serve`
+	// debugging still works.
+	if fi, err := os.Stdin.Stat(); err == nil && fi.Mode()&os.ModeCharDevice == 0 {
+		go func() {
+			if _, err := io.Copy(io.Discard, os.Stdin); err == nil {
+				fmt.Fprintln(os.Stderr, "nekos-core: controlling GUI closed stdin; shutting down")
+			}
+			os.Exit(0)
+		}()
 	}
 
 	sig := make(chan os.Signal, 1)
@@ -250,20 +244,6 @@ func cmdServe(args []string) error {
 	<-sig
 	_ = srv.Close()
 	return m.Stop()
-}
-
-// watchParent polls until this process is no longer a direct child of pid
-// (i.e. its parent exited and it got reparented), then exits so the daemon
-// never outlives the GUI that started it.
-func watchParent(parent int) {
-	t := time.NewTicker(2 * time.Second)
-	defer t.Stop()
-	for range t.C {
-		if os.Getppid() != parent {
-			fmt.Fprintf(os.Stderr, "nekos-core: controlling process (pid %d) exited; shutting down\n", parent)
-			os.Exit(0)
-		}
-	}
 }
 
 func cmdTest(args []string) error {

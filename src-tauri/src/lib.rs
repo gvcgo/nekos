@@ -292,8 +292,9 @@ fn shutdown_all(state: &AppState) {
 }
 
 /// Kill orphaned `nekos-core serve` control processes left behind by a
-/// crashed GUI (Linux). Called at startup so a fresh instance can bind the
-/// inbound port again and start/switch nodes. No-op where unimplemented.
+/// crashed GUI (Linux /proc scan, macOS pkill, Windows PowerShell). Called
+/// at startup so a fresh instance can bind the inbound port again and
+/// start/switch nodes.
 fn cleanup_stale_cores() {
     runtime::reap_orphan_daemons();
 }
@@ -1746,7 +1747,6 @@ pub fn run() {
             let state = AppState::open(handle)?;
             let app_state = state.clone();
             app.manage(state);
-            #[cfg(target_os = "linux")]
             if sysproxy::leftover_at(app_state.settings().port) {
                 let _ = sysproxy::disable();
             }

@@ -144,6 +144,22 @@ mod win_impl {
         notify_change();
         Ok(())
     }
+
+    /// True when WinINET still routes to 127.0.0.1:port (a crash could not
+    /// run disable). Startup restores it so traffic does not hit a dead
+    /// orphaned core after reaping.
+    pub fn leftover_at(port: u16) -> bool {
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let Ok(key) = hkcu.open_subkey(INTERNET_SETTINGS) else {
+            return false;
+        };
+        let enabled: u32 = key.get_value("ProxyEnable").unwrap_or(0);
+        if enabled == 0 {
+            return false;
+        }
+        let server: String = key.get_value("ProxyServer").unwrap_or_default();
+        server == format!("{HOST}:{port}")
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -248,14 +264,54 @@ mod mac_impl {
             Ok(())
         })
     }
+
+    /// True when any network service still routes web traffic through
+    /// 127.0.0.1:port with the proxy enabled (a crash could not run
+    /// disable). Startup restores it so traffic does not hit a dead
+    /// orphaned core after reaping.
+    pub fn leftover_at(port: u16) -> bool {
+        let Ok(list) = services() else {
+            return false;
+        };
+        let port = port.to_string();
+        for svc in &list {
+            let Ok(out) = std::process::Command::new(NETWORKSETUP)
+                .args(["-getwebproxy", svc])
+                .output()
+            else {
+                continue;
+            };
+            if !out.status.success() {
+                continue;
+            }
+            let text = String::from_utf8_lossy(&out.stdout);
+            let mut enabled = false;
+            let mut host_ok = false;
+            let mut port_ok = false;
+            for line in text.lines() {
+                let line = line.trim();
+                if let Some(v) = line.strip_prefix("Enabled:") {
+                    enabled = v.trim() == "Yes";
+                } else if let Some(v) = line.strip_prefix("Server:") {
+                    host_ok = v.trim() == HOST;
+                } else if let Some(v) = line.strip_prefix("Port:") {
+                    port_ok = v.trim() == port;
+                }
+            }
+            if enabled && host_ok && port_ok {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 #[cfg(target_os = "linux")]
 pub use linux_impl::{disable, enable, leftover_at};
 #[cfg(target_os = "windows")]
-pub use win_impl::{disable, enable};
+pub use win_impl::{disable, enable, leftover_at};
 #[cfg(target_os = "macos")]
-pub use mac_impl::{disable, enable};
+pub use mac_impl::{disable, enable, leftover_at};
 
 #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 pub fn enable(_port: u16) -> Result<(), String> {
@@ -267,7 +323,7 @@ pub fn disable() -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 pub fn leftover_at(_port: u16) -> bool {
     false
 }
