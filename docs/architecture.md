@@ -71,7 +71,8 @@
 
 分组（对应 v2rayN 的"分组+订阅"）：
 - `groups(id, name, sub_url, sub_userinfo?, type, sort_order, enabled)`
-- 分组内置默认组（手动添加节点用，无订阅）。
+- 内置 All 组（id=1，无订阅，不可删改）：作为跨分组合并视图列出所有普通分组的节点
+  （行仍带真实 `group_id`，单节点操作按所属分组执行）；向 All 粘贴导入的节点落在此组名下。
 
 节点（导入/解析产物，归一化，见 §5）：
 - `nodes(id, group_id, tag, type, spec_json /*NodeSpec*/, remark, created_at, updated_at)`

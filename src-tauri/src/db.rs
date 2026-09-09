@@ -201,7 +201,9 @@ impl Db {
                 host_group  INTEGER NOT NULL,
                 PRIMARY KEY (strategy_id, host_group)
             );
-            INSERT OR IGNORE INTO groups (id, name) VALUES (1, '默认分组');
+            INSERT OR IGNORE INTO groups (id, name) VALUES (1, 'All');
+            -- legacy name of the built-in aggregate group (pre-All rename)
+            UPDATE groups SET name = 'All' WHERE id = 1 AND name = '默认分组';
             CREATE TABLE IF NOT EXISTS route_profiles (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 name       TEXT NOT NULL,
@@ -380,7 +382,7 @@ impl Db {
     }
 
     pub fn delete_group(&self, id: i64) -> rusqlite::Result<()> {
-        // Nodes cascade; the default group (1) stays to keep a sane state.
+        // Nodes cascade; the built-in All group (1) stays to keep a sane state.
         if id == 1 {
             return Ok(());
         }
@@ -543,6 +545,29 @@ impl Db {
              WHERE group_id = ?1 ORDER BY rowid",
         )?;
         let rows = stmt.query_map(params![group_id], |row| {
+            Ok(Node {
+                id: row.get(0)?,
+                group_id: row.get(1)?,
+                r#type: row.get(2)?,
+                remark: row.get(3)?,
+                out: row.get(4)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Every node of every normal group (including the built-in All group,
+    /// id 1), ordered by group then insertion row. Feeds the "All"
+    /// aggregate view: the rows keep their real group_id so per-node
+    /// operations resolve back to the owning group.
+    pub fn nodes_all(&self) -> rusqlite::Result<Vec<Node>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT n.id, n.group_id, n.type, n.remark, n.out
+             FROM nodes n JOIN groups g ON g.id = n.group_id
+             WHERE COALESCE(g.kind, 'normal') = 'normal'
+             ORDER BY g.id, n.rowid",
+        )?;
+        let rows = stmt.query_map([], |row| {
             Ok(Node {
                 id: row.get(0)?,
                 group_id: row.get(1)?,
@@ -727,7 +752,7 @@ mod tests {
         let db = open_tmp();
         let groups = db.list_groups().unwrap();
         assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].name, "默认分组");
+        assert_eq!(groups[0].name, "All");
 
         let gid = db.create_group("机场A", Some("https://x/sub")).unwrap();
         let node = NewNode {
@@ -781,6 +806,33 @@ mod tests {
         // deleting the node removes its latency row
         db.delete_node(1, "node-a").unwrap();
         assert_eq!(db.list_latency(1).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn nodes_all_unions_normal_groups() {
+        let db = open_tmp();
+        // the All group itself
+        let n0 = NewNode { id: "own".into(), r#type: "anytls".into(), remark: "自带".into(), out: "{}".into() };
+        db.upsert_nodes(1, &[n0]).unwrap();
+        let a = db.create_group("组A", None).unwrap();
+        let b = db.create_group("组B", None).unwrap();
+        let na = NewNode { id: "a1".into(), r#type: "ss".into(), remark: "甲".into(), out: "{}".into() };
+        let nb = NewNode { id: "b1".into(), r#type: "vmess".into(), remark: "乙".into(), out: "{}".into() };
+        db.upsert_nodes(a, &[na]).unwrap();
+        db.upsert_nodes(b, &[nb]).unwrap();
+        let all = db.nodes_all().unwrap();
+        assert_eq!(all.len(), 3, "own + one per group");
+        let by_id: Vec<(&str, i64)> = all.iter().map(|n| (n.id.as_str(), n.group_id)).collect();
+        assert!(by_id.contains(&("own", 1)));
+        assert!(by_id.contains(&("a1", a)));
+        assert!(by_id.contains(&("b1", b)));
+        // duplicate ids across groups are kept (per-row ownership matters)
+        let dup = NewNode { id: "a1".into(), r#type: "ss".into(), remark: "甲2".into(), out: "{}".into() };
+        db.upsert_nodes(b, &[dup]).unwrap();
+        assert_eq!(db.nodes_all().unwrap().len(), 4);
+        // per-group list is untouched (union lives only in nodes_all)
+        assert_eq!(db.list_nodes(a).unwrap().len(), 1);
+        assert_eq!(db.list_nodes(1).unwrap().len(), 1);
     }
 
     #[test]

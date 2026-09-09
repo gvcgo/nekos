@@ -68,7 +68,7 @@ const zhL = {
   thLatency: "延迟",
   thOps: "操作",
   test: "测速",
-  share: "Share",
+  share: "分享",
   shareTip: "分享节点链接（二维码弹窗内可复制）",
   quickStartTip: "选择该节点并快速启动",
   remove: "删除",
@@ -204,10 +204,16 @@ function tt(k: DictKeys, p?: Record<string, string | number>): string {
   return fmt(dict.value[k] as string, p);
 }
 
+/** Built-in aggregate group id: "All" shows every normal group's nodes. */
+const ALL_GROUP_ID = 1;
+
 const groups = ref<Group[]>([]);
 const settings = ref<Settings | null>(null);
 const nodes = ref<Node[]>([]);
 const status = ref<CoreStatusView>({ running: false, proxy_enabled: false });
+/** Node most recently picked inside the All aggregate view (owning group +
+ *  id). Drives the ● highlight there and the session the toolbar Start uses. */
+const allCurrent = ref<{ group: number; id: string } | null>(null);
 
 const importText = ref("");
 const importBusy = ref(false);
@@ -302,6 +308,19 @@ async function reloadNodes() {
   } catch {
     delayMap.value = {};
   }
+  if (isAllView()) {
+    // All keeps no stored selection of its own: just drop a highlight
+    // whose row disappeared.
+    if (
+      allCurrent.value &&
+      !nodes.value.some(
+        (n) => n.group_id === allCurrent.value!.group && n.id === allCurrent.value!.id,
+      )
+    ) {
+      allCurrent.value = null;
+    }
+    return;
+  }
   const sel = selectedNodeId();
   if (sel && !nodes.value.find((n) => n.id === sel)) {
     // stale selection (node deleted): fall back to first
@@ -338,13 +357,37 @@ async function doImport() {
   }
 }
 
-async function removeNode(nodeId: string) {
-  await deleteNode(currentGroupId(), nodeId);
+async function removeNode(n: Node) {
+  await deleteNode(runGroupFor(n), n.id);
   await reloadNodes();
 }
 
 function currentGroup(): Group {
   return groups.value.find((g) => g.id === currentGroupId()) ?? groups.value[0];
+}
+
+/** True when the built-in "All" aggregate view is active. */
+function isAllView(): boolean {
+  return (
+    currentGroupId() === ALL_GROUP_ID &&
+    (currentGroup()?.kind ?? "normal") === "normal"
+  );
+}
+
+/** Group whose session a node runs/selects under: inside "All" the node's
+ *  owning group, elsewhere the current view group (host or strategy). */
+function runGroupFor(n: Node): number {
+  return isAllView() ? n.group_id : currentGroupId();
+}
+
+/** Row highlight: All marks the node picked there; real group/strategy
+ *  views mark the group's stored current selection as before. */
+function isRowCurrent(n: Node): boolean {
+  if (isAllView()) {
+    const c = allCurrent.value;
+    return !!c && c.group === n.group_id && c.id === n.id;
+  }
+  return n.id === selectedNodeId();
 }
 
 const isVirtualCurrent = computed(() => (currentGroup()?.kind ?? "normal") !== "normal");
@@ -367,11 +410,17 @@ const normalGroups = computed(() =>
   groups.value.filter((g) => (g.kind ?? "normal") === "normal"),
 );
 
+/** Real groups usable as strategy members / join targets: the All
+ *  aggregate is not a container, so it stays out of those pickers. */
+const memberGroups = computed(() =>
+  normalGroups.value.filter((g) => g.id !== ALL_GROUP_ID),
+);
+
 function openStrategyDialog() {
   stratName.value = "";
   stratAuto.value = true;
   const m: Record<number, boolean> = {};
-  for (const g of normalGroups.value) m[g.id] = true;
+  for (const g of memberGroups.value) m[g.id] = true;
   stratMembers.value = m;
   stratOpen.value = true;
 }
@@ -380,7 +429,9 @@ async function createStrategy() {
   stratBusy.value = true;
   err.value = "";
   try {
-    const ids = normalGroups.value.filter((g) => stratMembers.value[g.id]).map((g) => g.id);
+    const ids = memberGroups.value
+      .filter((g) => stratMembers.value[g.id])
+      .map((g) => g.id);
     if (!stratName.value.trim() || !ids.length) {
       err.value = tt("stratNeedName");
       return;
@@ -414,7 +465,10 @@ const joinBusy = ref(false);
 
 const joinableGroups = computed(() =>
   groups.value.filter(
-    (g) => (g.kind ?? "normal") === "normal" && g.id !== currentGroupId(),
+    (g) =>
+      (g.kind ?? "normal") === "normal" &&
+      g.id !== currentGroupId() &&
+      g.id !== ALL_GROUP_ID,
   ),
 );
 
@@ -544,7 +598,27 @@ async function toggleStart() {
     if (status.value.running) {
       status.value = await coreStop();
     } else {
-      const run = await coreStart();
+      // "All" has no session of its own: start the owning group of the
+      // node picked here, falling back to the first visible node.
+      let target = currentGroupId();
+      if (isAllView()) {
+        let n = allCurrent.value
+          ? nodes.value.find(
+              (x) =>
+                x.group_id === allCurrent.value!.group &&
+                x.id === allCurrent.value!.id,
+            )
+          : undefined;
+        n = n ?? visibleNodes.value[0];
+        if (n) {
+          const g = runGroupFor(n);
+          await setNodeCurrent(g, n.id);
+          await loadSettings();
+          allCurrent.value = { group: n.group_id, id: n.id };
+          target = g;
+        }
+      }
+      const run = await coreStart(target);
       status.value = run.status;
     }
   } catch (e) {
@@ -555,19 +629,21 @@ async function toggleStart() {
   }
 }
 
-async function pickNode(nodeId: string) {
-  await setNodeCurrent(currentGroupId(), nodeId);
+async function pickNode(n: Node) {
+  const g = runGroupFor(n);
+  await setNodeCurrent(g, n.id);
   await loadSettings();
+  if (isAllView()) {
+    allCurrent.value = { group: n.group_id, id: n.id };
+  }
   if (status.value.running) {
     // live switch: rebuild the core with the new selection
     startBusy.value = true;
     switchMsg.value = "";
     try {
-      const run = await coreStart();
+      const run = await coreStart(g);
       status.value = run.status;
-      switchMsg.value = tt("switchedProxy", {
-        remark: nodes.value.find((n) => n.id === nodeId)?.remark ?? nodeId,
-      });
+      switchMsg.value = tt("switchedProxy", { remark: n.remark });
     } catch (e) {
       err.value = String(e);
     } finally {
@@ -577,18 +653,20 @@ async function pickNode(nodeId: string) {
   }
 }
 
-async function startNode(nodeId: string) {
+async function startNode(n: Node) {
   startBusy.value = true;
   err.value = "";
   switchMsg.value = "";
   try {
-    await setNodeCurrent(currentGroupId(), nodeId);
+    const g = runGroupFor(n);
+    await setNodeCurrent(g, n.id);
     await loadSettings();
-    const run = await coreStart();
+    if (isAllView()) {
+      allCurrent.value = { group: n.group_id, id: n.id };
+    }
+    const run = await coreStart(g);
     status.value = run.status;
-    switchMsg.value = tt("startedNode", {
-      remark: nodes.value.find((n) => n.id === nodeId)?.remark ?? nodeId,
-    });
+    switchMsg.value = tt("startedNode", { remark: n.remark });
   } catch (e) {
     err.value = String(e);
   } finally {
@@ -597,9 +675,9 @@ async function startNode(nodeId: string) {
   }
 }
 
-async function testNode(nodeId: string) {
-  delayMap.value[nodeId] = { delay_ms: null, error: null };
-  delayMap.value[nodeId] = await measureNode(currentGroupId(), nodeId);
+async function testNode(n: Node) {
+  delayMap.value[n.id] = { delay_ms: null, error: null };
+  delayMap.value[n.id] = await measureNode(runGroupFor(n), n.id);
 }
 
 async function testAll() {
@@ -683,7 +761,7 @@ onBeforeUnmount(() => {
         </select>
         <span class="group-ops" :title="tt('manageGroups')">
           <button class="ghost mini" @click="newGroup">{{ tt("addGroup") }}</button>
-          <button class="ghost mini" :title="tt('strategyTip')" @click="openStrategyDialog">{{ tt("addStrategy") }}</button>
+          <button v-if="!isAllView()" class="ghost mini" :title="tt('strategyTip')" @click="openStrategyDialog">{{ tt("addStrategy") }}</button>
           <button v-if="currentGroupId() !== 1" class="ghost mini" @click="renameCurrentGroup">{{ tt("renameBtn") }}</button>
           <button v-if="currentGroupId() !== 1" class="ghost mini danger" :title="tt('deleteGroupTip')" @click="removeGroup">{{ tt("deleteBtn") }}</button>
         </span>
@@ -744,17 +822,17 @@ onBeforeUnmount(() => {
           <tr><th></th><th>{{ tt("thType") }}</th><th>{{ tt("thRemark") }}</th><th>{{ tt("thLatency") }}</th><th>{{ tt("thOps") }}</th></tr>
         </thead>
         <tbody>
-          <tr v-for="n in sortedNodes" :key="n.id" :class="{ current: n.id === selectedNodeId() }">
-            <td class="sel" @click="pickNode(n.id)">{{ n.id === selectedNodeId() ? "●" : "○" }}</td>
+          <tr v-for="n in sortedNodes" :key="n.id" :class="{ current: isRowCurrent(n) }">
+            <td class="sel" @click="pickNode(n)">{{ isRowCurrent(n) ? "●" : "○" }}</td>
             <td><code>{{ n.type }}</code></td>
-            <td class="remark" @click="pickNode(n.id)">{{ n.remark }}</td>
+            <td class="remark" @click="pickNode(n)">{{ n.remark }}</td>
             <td :class="delayMap[n.id]?.error ? 'bad' : ''">{{ delayText(n) }}</td>
             <td class="ops">
-              <button class="ghost" :disabled="startBusy" :title="tt('quickStartTip')" @click="startNode(n.id)">{{ tt("start") }}</button>
-              <button class="ghost" :disabled="!!delayMap[n.id] && delayMap[n.id]!.delay_ms == null && !delayMap[n.id]!.error" @click="testNode(n.id)">{{ tt("test") }}</button>
+              <button class="ghost" :disabled="startBusy" :title="tt('quickStartTip')" @click="startNode(n)">{{ tt("start") }}</button>
+              <button class="ghost" :disabled="!!delayMap[n.id] && delayMap[n.id]!.delay_ms == null && !delayMap[n.id]!.error" @click="testNode(n)">{{ tt("test") }}</button>
               <template v-if="n.type !== 'strategy'">
                 <button class="ghost" :disabled="qrBusy" :title="tt('shareTip')" @click="showNodeQr(n.group_id, n.id, n.remark)">{{ tt("share") }}</button>
-                <button v-if="!isVirtualCurrent" class="ghost danger" @click="removeNode(n.id)">{{ tt("remove") }}</button>
+                <button v-if="!isVirtualCurrent" class="ghost danger" @click="removeNode(n)">{{ tt("remove") }}</button>
               </template>
               <template v-else>
                 <button class="ghost" :title="tt('joinTip')" @click="openJoin(n)">{{ tt("joinIn") }}</button>
@@ -775,10 +853,10 @@ onBeforeUnmount(() => {
         <div class="dialog-row"><label>{{ tt("nameLabel") }}</label><input v-model="stratName" class="inp" :placeholder="tt('namePlaceholder')" /></div>
         <label class="check" style="align-self: flex-start"><input v-model="stratAuto" type="checkbox" /> {{ tt("autoCheck") }}</label>
         <div class="node-pick">
-          <label v-for="g in normalGroups" :key="g.id" class="pick">
+          <label v-for="g in memberGroups" :key="g.id" class="pick">
             <input type="checkbox" v-model="stratMembers[g.id]" /> {{ g.name }}
           </label>
-          <div v-if="!normalGroups.length" class="dim">{{ tt("noMembers") }}</div>
+          <div v-if="!memberGroups.length" class="dim">{{ tt("noMembers") }}</div>
         </div>
         <div class="dialog-btns">
           <span v-if="err" class="err">{{ err }}</span>

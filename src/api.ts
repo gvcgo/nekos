@@ -301,8 +301,13 @@ export interface RunResult {
   selected_node?: string | null;
 }
 
-export function coreStart(): Promise<RunResult> {
-  return invoke<RunResult>("core_start");
+/** Start/rebuild the core; targetGroupId overrides the persisted current
+ *  group (used by the All aggregate view to run a node's owning group). */
+export function coreStart(targetGroupId?: number): Promise<RunResult> {
+  return invoke<RunResult>(
+    "core_start",
+    targetGroupId == null ? {} : { targetGroupId },
+  );
 }
 
 export function coreStop(): Promise<CoreStatusView> {

@@ -26,6 +26,11 @@ use tauri::{Emitter, Manager, State};
 
 use crate::core::{CoreCtl, ImportResult};
 
+/// Built-in aggregate group id ("All"). Its node list, persisted latency
+/// and batch measurements span every normal group instead of one group's
+/// membership; per-row operations still resolve to each node's real group.
+const ALL_GROUP_ID: i64 = 1;
+
 // ---- shared state -------------------------------------------------------
 
 #[derive(Clone)]
@@ -316,6 +321,11 @@ async fn nodes_list(state: State<'_, AppState>, group_id: i64) -> Result<Vec<db:
     let db = state.db.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+        // "All" aggregates the real nodes of every normal group; strategy
+        // pseudo-rows keep appearing only in their host group's own list.
+        if group_id == ALL_GROUP_ID {
+            return db.nodes_all().map_err(|e| e.to_string());
+        }
         let mut nodes = db.nodes_for_group(group_id).map_err(|e| e.to_string())?;
         // strategy (policy) groups masquerade as nodes in their host group
         for s in db.strategies_for(group_id).map_err(|e| e.to_string())? {
@@ -741,7 +751,11 @@ fn resolve_entries(
     filter_v6: bool,
 ) -> Result<Vec<EntryOwned>, String> {
     let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
-    let nodes = db.nodes_for_group(group_id).map_err(|e| format!("db: {e}"))?;
+    let nodes = if group_id == ALL_GROUP_ID {
+        db.nodes_all().map_err(|e| format!("db: {e}"))?
+    } else {
+        db.nodes_for_group(group_id).map_err(|e| format!("db: {e}"))?
+    };
     let entries: Vec<EntryOwned> = nodes
         .iter()
         .filter(|n| ids.map(|ids| ids.contains(&n.id)).unwrap_or(true))
@@ -1096,8 +1110,22 @@ async fn latency_list(
     let db = state.db.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
-        let nodes = db.nodes_for_group(group_id).map_err(|e| e.to_string())?;
-        let mut owners: Vec<i64> = nodes.iter().map(|n| n.group_id).collect();
+        // For "All" collect every group's persisted rows; otherwise the
+        // owners of the group's own nodes (strategy groups aggregate their
+        // member groups' rows).
+        let mut owners: Vec<i64> = if group_id == ALL_GROUP_ID {
+            db.list_groups()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .map(|g| g.id)
+                .collect()
+        } else {
+            let nodes = db.nodes_for_group(group_id).map_err(|e| e.to_string())?;
+            let mut owners: Vec<i64> = nodes.iter().map(|n| n.group_id).collect();
+            owners.sort_unstable();
+            owners.dedup();
+            owners
+        };
         owners.sort_unstable();
         owners.dedup();
         let mut rows = Vec::new();
@@ -1441,10 +1469,17 @@ fn core_status_raw(state: &AppState) -> CoreStatusView {
     }
 }
 
+/// Start (or rebuild, when already running) the core with a group's session.
+/// The session group defaults to the persisted current group; the "All"
+/// aggregate view passes the owning group of the node being started so the
+/// running proxy follows that node without leaving the All view.
 #[tauri::command]
-async fn core_start(state: State<'_, AppState>) -> Result<RunResult, String> {
+async fn core_start(
+    state: State<'_, AppState>,
+    target_group_id: Option<i64>,
+) -> Result<RunResult, String> {
     let settings = state.settings();
-    let group_id = settings.current_group_id;
+    let group_id = target_group_id.unwrap_or(settings.current_group_id);
     let rule_assets = if settings.mode == "rule" {
         Some(state.ensure_rule_assets().await?)
     } else {
