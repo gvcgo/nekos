@@ -47,6 +47,7 @@
 - [ ] 托盘菜单增强（快速切节点/测速/模式）
 - [x] 开机自启（XDG autostart）与关闭最小化到托盘（托盘化见 P0）：开机自启开关已落地（写入 `~/.config/autostart`，设置页即时生效，Wayland/X11 均可用）；全局热键不提供（Wayland 无法 X 抓键）[2026-09-08]
 - [x] 托盘恢复后标题栏按钮失效（Linux/Wayland，tao#1046/#1299 = tauri#15460）：vendor tao 0.36.0 为 0.35.99 走 `[patch.crates-io]`，随 tauri ≥ 2.12（tao ^0.36）后移除 vendor/tao 与 patch [2026-09-08]
+- [x] WebKitGTK 显示器热插拔除零崩溃（`DisplayLinkGLib.cpp:64`，Wayland 输出重连时 `gdk_monitor_get_refresh_rate()=0` → `0/0` → SIGFPE 打死 GUI）：`run()` 内守卫 `WEBKIT_FORCE_VBLANK_TIMER=1` 改走 60fps 定时 vblank；上游 2.52.6/main 均未修，随 Arch webkit2gtk 升包移除 [2026-09-11，见 architecture §8.1]
 - [ ] 通知（订阅更新失败/断线提醒）
 
 ## P4 — 平台与发布

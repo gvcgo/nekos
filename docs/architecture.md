@@ -16,6 +16,7 @@
 | 数据 | SQLite；节点存**归一化 NodeSpec**，运行时由 core 转 sing-box option | §5 |
 | 控制面 | JSON-RPC 2.0 over 127.0.0.1 随机端口 + token；SSE 事件推送 | §6 |
 | 许可证 | 本项目 GPL-3.0 | sing-box/nekobox/v2rayN 皆 GPL；Go 静态链接使本仓库整体受 GPL 约束（§9） |
+| Linux GUI 抗上游崩溃 | 启动时（webview 之前）强制 `WEBKIT_FORCE_VBLANK_TIMER=1` | WebKitGTK 2.52.6 DisplayLink 除零 → 显示器热插拔时 GUI 被 SIGFPE 打死（实测两次）；§8.1 |
 
 ## 1. 目标与非目标
 
@@ -171,6 +172,26 @@ DNS：P0 采用 sing-box 默认（host 解析走代理出口）加国内域名�
 | 托盘 | libappindicator (tauri-plugin) | 内置 | 内置 |
 
 「关闭最小化到托盘」「开机不自启直到用户开启」等细节同 v2rayN。
+
+### 8.1 Linux 桌面壳：WebKitGTK DisplayLink 除零崩溃与守卫（2026-09-11）
+
+现象与证据（coredump + journal，两次复现，非 Rust panic）：
+- GUI 进程被内核以 `SIGFPE` 打死（`traps: nekos[...] trap divide error ip:... libwebkit2gtk-4.1.so.0`），用户观感是"莫名其妙自动退出"；core 子进程随后靠 stdin EOF 退出，系统代理残留由下次启动的 `cleanup_stale_cores` + `leftover_at` 收拾。
+- 根因（源码级）：`Source/WebKit/UIProcess/glib/DisplayLinkGLib.cpp:64`
+  `m_fpsThrottleRatio = refreshRate / m_displayNominalFramesPerSecond;` 无零检查；
+  `refreshRate` 取自 `gdk_monitor_get_refresh_rate()/1000`（Wayland 下输出重连产生的新 `GdkMonitor`
+  在 mode 落地前返回 0 = unknown）→ `0/0`。
+- 触发（实测）：显示器/连接器重新枚举。两次 crash 均在 niri `connecting connector: DP-6` 之后 ~20ms；
+  本机 DP-6 是 Realtek "UHD HDR demoset" 演示板（EDID 物理尺寸 0×0），会自行拉 HPD。
+- 上游状态：webkitgtk-2.52.6 与 `main` 分支同样未加防护 → 只能在本层规避。
+
+守卫：`run()` 起始处（创建 webview 之前）设 `WEBKIT_FORCE_VBLANK_TIMER=1`（仅当环境里未显式设置）。
+该开关让 WebKit 走 `DisplayVBlankMonitorTimer`，其 refreshRate 是编译期常量
+`WebCore::FullSpeedFramesPerSecond = 60` → `60/60`，结构性不可能除零（与显示器状态无关）。
+代价：UI 进程 vblank 由 DRM 真实垂直同步改为 60Hz 定时线程 —— WebKit 自身在 DRM vblank 不可用时的
+兜底路径（displayID 0 / 无 CRTC 匹配 / WPE），高刷屏上 UI 刷新回调封顶 60fps。
+退出条件：Arch 的 webkit2gtk 修掉该除零后删除守卫；调试时可用 `WEBKIT_FORCE_VBLANK_TIMER=0`
+显式退回原行为做对照。
 
 ## 9. 安全与合规
 - RPC 只绑 127.0.0.1 + token；配置/日志落盘 0600；日志脱敏（password/token 打码）。

@@ -299,6 +299,36 @@ fn cleanup_stale_cores() {
     runtime::reap_orphan_daemons();
 }
 
+/// Keep the GUI process alive across monitor hotplug on WebKitGTK.
+///
+/// `DisplayLink::platformInitialize()` (Source/WebKit/UIProcess/glib/
+/// DisplayLinkGLib.cpp:64) computes `refreshRate / m_displayNominalFramesPerSecond`
+/// with no zero check. Where the rate comes from `gdk_monitor_get_refresh_rate()`
+/// (0 = unknown, which is exactly what a re-advertised Wayland output reports
+/// until its mode lands), both operands are 0 and the `div` traps: the kernel
+/// kills the whole GUI with SIGFPE — no Rust panic, no core log, the app just
+/// vanishes (and leaves the tray/system-proxy state for the next launch's
+/// cleanup). Verified twice on Arch (webkit2gtk-4.1 2.52.6-1, niri/Wayland),
+/// each ~20 ms after the compositor re-connected a connector:
+/// `traps: nekos[...] trap divide error ip:... libwebkit2gtk-4.1.so` +
+/// coredump at DisplayLinkGLib.cpp:64.
+///
+/// `WEBKIT_FORCE_VBLANK_TIMER=1` routes WebKit to `DisplayVBlankMonitorTimer`,
+/// whose refresh rate is the compile-time constant
+/// `WebCore::FullSpeedFramesPerSecond` (60), so the division is 60/60 and can
+/// never trap. Cost: the UI process's vblank comes from a 60Hz timer thread
+/// instead of DRM vblank — WebKit's own fallback whenever DRM vblank is
+/// unavailable (displayID 0, no CRTC match, WPE) — which caps UI refresh
+/// callbacks at 60fps. Upstream 2.52.6 *and* `main` still divide unguarded,
+/// so keep this until Arch ships a fixed webkit2gtk. An explicit value in the
+/// environment wins; `WEBKIT_FORCE_VBLANK_TIMER=0` restores stock behavior.
+#[cfg(target_os = "linux")]
+fn apply_webkit_vblank_guard() {
+    if std::env::var_os("WEBKIT_FORCE_VBLANK_TIMER").is_none() {
+        std::env::set_var("WEBKIT_FORCE_VBLANK_TIMER", "1");
+    }
+}
+
 // ---- basic commands ------------------------------------------------------
 
 #[tauri::command]
@@ -1460,6 +1490,34 @@ mod filter_tests {
     }
 }
 
+#[cfg(all(test, target_os = "linux"))]
+mod webkit_guard_tests {
+    use super::*;
+
+    /// The guard's whole contract with WebKit is this environment variable:
+    /// set it when absent, leave an explicit user value (e.g. "0" to opt out)
+    /// untouched. Losing either half silently reintroduces the SIGFPE crash
+    /// or overrides a deliberate override.
+    #[test]
+    fn guard_sets_timer_vblank_unless_overridden() {
+        let key = "WEBKIT_FORCE_VBLANK_TIMER";
+
+        std::env::remove_var(key);
+        apply_webkit_vblank_guard();
+        assert_eq!(std::env::var(key).as_deref(), Ok("1"));
+
+        // Idempotent: an already-set generated value is not rewritten.
+        apply_webkit_vblank_guard();
+        assert_eq!(std::env::var(key).as_deref(), Ok("1"));
+
+        std::env::set_var(key, "0");
+        apply_webkit_vblank_guard();
+        assert_eq!(std::env::var(key).as_deref(), Ok("0"), "explicit value must win");
+
+        std::env::remove_var(key);
+    }
+}
+
 // ---- core lifecycle -----------------------------------------------------
 
 #[tauri::command]
@@ -1736,6 +1794,11 @@ fn on_tray_primary_activation(app: &tauri::AppHandle, clicks: &Arc<TrayClicks>) 
 // ---- app bootstrap ------------------------------------------------------
 
 pub fn run() {
+    // Before any webview exists: WebKit reads this when it creates the first
+    // DisplayLink (see apply_webkit_vblank_guard).
+    #[cfg(target_os = "linux")]
+    apply_webkit_vblank_guard();
+
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
