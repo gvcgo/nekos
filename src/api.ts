@@ -294,6 +294,9 @@ export interface CoreStatusView {
   running: boolean;
   started_at?: string;
   proxy_enabled: boolean;
+  /** Session group + node of the running instance (absent while stopped). */
+  group_id?: number | null;
+  node_id?: string | null;
 }
 
 export interface RunResult {

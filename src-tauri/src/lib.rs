@@ -113,115 +113,6 @@ impl AppState {
             .map(|db| db.load_settings())
             .unwrap_or_default()
     }
-
-    /// Assemble the `core run` session JSON from DB + settings.
-    /// rule_assets must be Some for rule mode (caller ensures downloads).
-    /// filter_v6 excludes IPv6-literal nodes from the session entirely.
-    fn build_session(
-        &self,
-        group_id: i64,
-        rule_assets: Option<(String, String)>,
-        filter_v6: bool,
-    ) -> Result<(String, String), String> {
-        let settings = self.settings();
-        let db = self.db.lock().map_err(|_| "db lock poisoned".to_string())?;
-        // A selected "strat:<gid>" pseudo-node runs the member union
-        // instead of the host group's own nodes.
-        let strat_override: Option<i64> = settings
-            .selected_by_group
-            .get(&group_id)
-            .and_then(|s| s.strip_prefix("strat:"))
-            .and_then(|v| v.parse().ok());
-        let source_group = strat_override.unwrap_or(group_id);
-        let nodes = db.nodes_for_group(source_group).map_err(|e| format!("db: {e}"))?;
-        if nodes.is_empty() {
-            return Err("当前分组没有节点".into());
-        }
-        let nodes: Vec<&db::Node> = nodes
-            .iter()
-            .filter(|n| {
-                if !filter_v6 {
-                    return true;
-                }
-                let out: serde_json::Value = match serde_json::from_str(&n.out) {
-                    Ok(v) => v,
-                    Err(_) => return true, // keep unparsable rather than drop silently
-                };
-                !is_ipv6_server(&out)
-            })
-            .collect();
-        if nodes.is_empty() {
-            return Err("开启「过滤 IPv6 节点」后该分组没有可用节点".into());
-        }
-        let selected = settings
-            .selected_by_group
-            .get(&if strat_override.is_some() { source_group } else { group_id })
-            .and_then(|id| nodes.iter().find(|n| &n.id == id))
-            .map(|n| n.id.clone())
-            .unwrap_or_else(|| nodes[0].id.clone());
-        let entries: Vec<serde_json::Value> = nodes
-            .iter()
-            .filter_map(|n| -> Option<serde_json::Value> {
-                let out: serde_json::Value = serde_json::from_str(&n.out).ok()?;
-                Some(serde_json::json!({ "id": n.id, "out": out }))
-            })
-            .collect();
-        let strat_kind: Option<String> = strat_override
-            .and_then(|sg| db.group(sg).ok().flatten().map(|g| g.kind));
-        let is_auto_strategy = strat_kind.as_deref() == Some("strategy");
-        let mode = if is_auto_strategy {
-            "strategy"
-        } else {
-            match settings.mode.as_str() {
-                "direct" => "direct",
-                "rule" => "rule",
-                _ => "global",
-            }
-        };
-        let mut session = serde_json::json!({
-            "mode": mode,
-            "inbound": { "listen": "127.0.0.1", "port": settings.port, "type": "mixed" },
-            "entries": entries,
-            "selected": selected,
-            "log_level": settings.log_level,
-        });
-        if is_auto_strategy {
-            // lowest-latency with automatic failover: the core's urltest
-            // group re-probes on its interval and re-pins the fastest
-            // healthy member when the current one fails.
-            session["strategy"] = serde_json::json!({
-                "url": "http://www.gstatic.com/generate_204",
-                "interval": "1m",
-                "tolerance": 50,
-            });
-            session["selected"] = serde_json::json!("auto");
-        } else if mode == "rule" {
-            let (ip, site) = rule_assets
-                .ok_or_else(|| "规则模式需要 CN 规则集，请重试以触发下载".to_string())?;
-            session["rule_assets"] = serde_json::json!({
-                "geoip_cn": ip,
-                "geosite_cn": site,
-            });
-            // A custom routing profile (rules + final outbound) overrides the
-            // built-in bypass-mainland rules. A stale/deleted profile id
-            // silently falls back to the built-in profile.
-            if let Some(pid) = settings.route_profile_id {
-                if let Some(p) = db.get_route_profile(pid).map_err(|e| format!("db: {e}"))? {
-                    let rules: serde_json::Value = serde_json::from_str(&p.rules_json)
-                        .map_err(|_| "路由档案规则数据损坏".to_string())?;
-                    session["route"] = serde_json::json!({
-                        "final": p.final_out,
-                        "rules": rules,
-                    });
-                }
-            }
-        }
-        let selected_id = session["selected"].as_str().unwrap_or_default().to_string();
-        Ok((
-            serde_json::to_string(&session).map_err(|e| e.to_string())?,
-            selected_id,
-        ))
-    }
 }
 
 // ---- serializable view structs ------------------------------------------
@@ -231,6 +122,9 @@ pub struct CoreStatusView {
     pub running: bool,
     pub started_at: Option<String>,
     pub proxy_enabled: bool,
+    /// Session group + node of the running instance; None while stopped.
+    pub group_id: Option<i64>,
+    pub node_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1518,7 +1412,310 @@ mod webkit_guard_tests {
     }
 }
 
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+
+    fn tmp_db() -> Db {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "nekos-session-test-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        Db::open(&dir.join("test.db")).unwrap()
+    }
+
+    fn node(id: &str) -> NewNode {
+        NewNode {
+            id: id.into(),
+            r#type: "anytls".into(),
+            remark: id.into(),
+            out: r#"{"type":"anytls","server":"h","server_port":1}"#.into(),
+        }
+    }
+
+    fn ids(db: &Db, group: i64) -> Vec<String> {
+        db.nodes_for_group(group)
+            .unwrap()
+            .into_iter()
+            .map(|n| n.id)
+            .collect()
+    }
+
+    fn selected(session: &str) -> String {
+        serde_json::from_str::<serde_json::Value>(session).unwrap()["selected"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    /// The rule the whole resume feature rests on: run the remembered node
+    /// while the group still has it, otherwise its fastest measured node,
+    /// otherwise the first row.
+    #[test]
+    fn selection_falls_back_to_fastest_when_node_is_gone() {
+        let db = tmp_db();
+        let g = db.create_group("组", None).unwrap();
+        db.upsert_nodes(g, &[node("n1"), node("n2"), node("n3")]).unwrap();
+        db.upsert_latency(g, "n1", None, Some("timeout"), "t").unwrap();
+        db.upsert_latency(g, "n2", Some(300), None, "t").unwrap();
+        db.upsert_latency(g, "n3", Some(80), None, "t").unwrap();
+        let all = ids(&db, g);
+
+        // remembered node still exists → kept, even though it is the slowest
+        assert_eq!(resolve_selection(&db, g, Some("n2"), &all), "n2");
+        // node deleted (or replaced by a refresh) → fastest measured
+        assert_eq!(resolve_selection(&db, g, Some("gone"), &all), "n3");
+        // a filtered-out node counts as gone: the fallback only sees runnable ids
+        assert_eq!(resolve_selection(&db, g, Some("n2"), &["n3".to_string()]), "n3");
+
+        // nothing ever measured → first row
+        let g2 = db.create_group("组2", None).unwrap();
+        db.upsert_nodes(g2, &[node("m1"), node("m2")]).unwrap();
+        assert_eq!(resolve_selection(&db, g2, None, &ids(&db, g2)), "m1");
+
+        // …and the session built for the group selects the same node
+        let mut s = db.load_settings();
+        s.selected_by_group.insert(g, "gone".into());
+        db.save_settings(&s).unwrap();
+        let (session, key) = build_session(&db, g, None, false).unwrap();
+        assert_eq!(selected(&session), "n3");
+        assert_eq!(key, "n3");
+    }
+
+    /// A "strat:<gid>" selection runs the strategy's member union; once the
+    /// strategy is gone the host group's own nodes take over again.
+    #[test]
+    fn strategy_selection_degrades_to_the_host_group() {
+        let db = tmp_db();
+        let g = db.create_group("组", None).unwrap();
+        db.upsert_nodes(g, &[node("n1"), node("n2")]).unwrap();
+        db.upsert_latency(g, "n2", Some(90), None, "t").unwrap();
+        let m = db.create_group("成员", None).unwrap();
+        db.upsert_nodes(m, &[node("k1")]).unwrap();
+        let st = db.create_strategy(g, "策略", "strategy", &format!("[{m}]")).unwrap();
+        let mut s = db.load_settings();
+        s.selected_by_group.insert(g, format!("strat:{st}"));
+        db.save_settings(&s).unwrap();
+
+        let (session, key) = build_session(&db, g, None, false).unwrap();
+        assert_eq!(key, format!("strat:{st}"));
+        assert_eq!(selected(&session), "auto", "auto strategy is pinned by urltest");
+
+        db.delete_group(st).unwrap();
+        let (session, key) = build_session(&db, g, None, false).unwrap();
+        assert_eq!(key, "n2", "host group's fastest node takes over");
+        assert_eq!(selected(&session), "n2");
+    }
+
+    /// Full resume chain against the real core: stale remembered node →
+    /// fastest sibling → running instance on the session's port.
+    #[test]
+    fn resume_session_starts_the_core_with_the_fallback_node() {
+        let _g = crate::runtime::daemon_test_lock();
+        let ctl = CoreCtl::new();
+        let links = [
+            "anytls://e0c664d9-415f-30b5-aeaf-547be3870274@ew.ali66mysql.com:26019/?sni=www.apple.com&insecure=1#resume-a",
+            "anytls://e0c664d9-415f-30b5-aeaf-547be3870274@ew.ali66mysql.com:26020/?sni=www.apple.com&insecure=1#resume-b",
+        ];
+        let parsed = ctl.parse(&links.join("\n")).expect("parse");
+        assert_eq!(parsed.nodes.len(), 2);
+        let db = tmp_db();
+        let group = db.create_group("组", None).unwrap();
+        let nodes: Vec<NewNode> = parsed
+            .nodes
+            .iter()
+            .map(|n| NewNode {
+                id: n.id.clone(),
+                r#type: n.r#type.clone(),
+                remark: n.remark.clone(),
+                out: n.out.to_string(),
+            })
+            .collect();
+        db.upsert_nodes(group, &nodes).unwrap();
+        let (fast, slow) = (nodes[1].id.clone(), nodes[0].id.clone());
+        db.upsert_latency(group, &fast, Some(70), None, "t").unwrap();
+        db.upsert_latency(group, &slow, Some(400), None, "t").unwrap();
+
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let mut s = db.load_settings();
+        s.port = port;
+        s.selected_by_group.insert(group, "node-that-was-deleted".into());
+        s.last_group_id = group;
+        s.last_node_id = "node-that-was-deleted".into();
+        s.resume_on_launch = true;
+        db.save_settings(&s).unwrap();
+
+        let (session, key) = build_session(&db, group, None, false).unwrap();
+        assert_eq!(key, fast);
+        ctl.core_start(&session).expect("core start");
+        assert!(ctl.mirror().0, "resumed core must run");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "session inbound never listened on {port}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        ctl.core_stop().expect("core stop");
+        ctl.shutdown();
+    }
+}
+
 // ---- core lifecycle -----------------------------------------------------
+
+/// Which node a group's session runs: the persisted selection while the
+/// group still has that node, otherwise its fastest measured node (lowest
+/// persisted delay), otherwise the first entry. `ids` are the group's
+/// runnable node ids in list order, never empty.
+fn resolve_selection(
+    db: &Db,
+    group_id: i64,
+    persisted: Option<&str>,
+    ids: &[String],
+) -> String {
+    if let Some(p) = persisted {
+        if ids.iter().any(|id| id == p) {
+            return p.to_string();
+        }
+    }
+    db.fastest_node(group_id)
+        .ok()
+        .flatten()
+        .filter(|fast| ids.iter().any(|id| id == fast))
+        .unwrap_or_else(|| ids[0].clone())
+}
+
+/// Assemble the `core run` session JSON from the DB.
+/// rule_assets must be Some for rule mode (caller ensures downloads).
+/// filter_v6 excludes IPv6-literal nodes from the session entirely.
+/// Returns (session JSON, UI selection key): the key is the row the session
+/// runs — a "strat:<gid>" pseudo node when the group runs a strategy — and
+/// is what the app remembers as "in use" for the launch resume.
+fn build_session(
+    db: &Db,
+    group_id: i64,
+    rule_assets: Option<(String, String)>,
+    filter_v6: bool,
+) -> Result<(String, String), String> {
+    let settings = db.load_settings();
+    // A selected "strat:<gid>" pseudo-node runs the member union instead of
+    // the host group's own nodes. A stale reference (strategy group deleted
+    // or left without members) falls back to the host group's own list.
+    let strat_ref: Option<i64> = settings
+        .selected_by_group
+        .get(&group_id)
+        .and_then(|s| s.strip_prefix("strat:"))
+        .and_then(|v| v.parse().ok());
+    let strat_override = match strat_ref {
+        Some(sg) if !db.nodes_for_group(sg).map_err(|e| format!("db: {e}"))?.is_empty() => {
+            Some(sg)
+        }
+        _ => None,
+    };
+    let source_group = strat_override.unwrap_or(group_id);
+    let nodes = db.nodes_for_group(source_group).map_err(|e| format!("db: {e}"))?;
+    if nodes.is_empty() {
+        return Err("当前分组没有节点".into());
+    }
+    let nodes: Vec<&db::Node> = nodes
+        .iter()
+        .filter(|n| {
+            if !filter_v6 {
+                return true;
+            }
+            let out: serde_json::Value = match serde_json::from_str(&n.out) {
+                Ok(v) => v,
+                Err(_) => return true, // keep unparsable rather than drop silently
+            };
+            !is_ipv6_server(&out)
+        })
+        .collect();
+    if nodes.is_empty() {
+        return Err("开启「过滤 IPv6 节点」后该分组没有可用节点".into());
+    }
+    let ids: Vec<String> = nodes.iter().map(|n| n.id.clone()).collect();
+    let sel_key = if strat_override.is_some() { source_group } else { group_id };
+    let persisted = settings.selected_by_group.get(&sel_key).map(|s| s.as_str());
+    let selected = resolve_selection(db, source_group, persisted, &ids);
+    let entries: Vec<serde_json::Value> = nodes
+        .iter()
+        .filter_map(|n| -> Option<serde_json::Value> {
+            let out: serde_json::Value = serde_json::from_str(&n.out).ok()?;
+            Some(serde_json::json!({ "id": n.id, "out": out }))
+        })
+        .collect();
+    let strat_kind: Option<String> = strat_override
+        .and_then(|sg| db.group(sg).ok().flatten().map(|g| g.kind));
+    let is_auto_strategy = strat_kind.as_deref() == Some("strategy");
+    let mode = if is_auto_strategy {
+        "strategy"
+    } else {
+        match settings.mode.as_str() {
+            "direct" => "direct",
+            "rule" => "rule",
+            _ => "global",
+        }
+    };
+    let mut session = serde_json::json!({
+        "mode": mode,
+        "inbound": { "listen": "127.0.0.1", "port": settings.port, "type": "mixed" },
+        "entries": entries,
+        "selected": selected,
+        "log_level": settings.log_level,
+    });
+    if is_auto_strategy {
+        // lowest-latency with automatic failover: the core's urltest
+        // group re-probes on its interval and re-pins the fastest
+        // healthy member when the current one fails.
+        session["strategy"] = serde_json::json!({
+            "url": "http://www.gstatic.com/generate_204",
+            "interval": "1m",
+            "tolerance": 50,
+        });
+        session["selected"] = serde_json::json!("auto");
+    } else if mode == "rule" {
+        let (ip, site) = rule_assets
+            .ok_or_else(|| "规则模式需要 CN 规则集，请重试以触发下载".to_string())?;
+        session["rule_assets"] = serde_json::json!({
+            "geoip_cn": ip,
+            "geosite_cn": site,
+        });
+        // A custom routing profile (rules + final outbound) overrides the
+        // built-in bypass-mainland rules. A stale/deleted profile id
+        // silently falls back to the built-in profile.
+        if let Some(pid) = settings.route_profile_id {
+            if let Some(p) = db.get_route_profile(pid).map_err(|e| format!("db: {e}"))? {
+                let rules: serde_json::Value = serde_json::from_str(&p.rules_json)
+                    .map_err(|_| "路由档案规则数据损坏".to_string())?;
+                session["route"] = serde_json::json!({
+                    "final": p.final_out,
+                    "rules": rules,
+                });
+            }
+        }
+    }
+    // UI row identity: the strategy pseudo node when one is being run.
+    let selection = match strat_override {
+        Some(sg) => format!("strat:{sg}"),
+        None => selected,
+    };
+    Ok((
+        serde_json::to_string(&session).map_err(|e| e.to_string())?,
+        selection,
+    ))
+}
 
 #[tauri::command]
 fn core_status(state: State<'_, AppState>) -> CoreStatusView {
@@ -1528,31 +1725,40 @@ fn core_status(state: State<'_, AppState>) -> CoreStatusView {
 fn core_status_raw(state: &AppState) -> CoreStatusView {
     let (running, started_at) = state.ctl.mirror();
     let proxy_enabled = state.proxy_on.lock().map(|g| *g).unwrap_or(false);
+    // Which node the running session uses (None while stopped: after a stop
+    // the remembered pair is history, not a live selection). The UI marks
+    // that row after the launch auto-resume brought the core up.
+    let s = state.settings();
+    let (group_id, node_id) = if running && !s.last_node_id.is_empty() {
+        (Some(s.last_group_id), Some(s.last_node_id))
+    } else {
+        (None, None)
+    };
     CoreStatusView {
         running,
         started_at,
         proxy_enabled,
+        group_id,
+        node_id,
     }
 }
 
-/// Start (or rebuild, when already running) the core with a group's session.
-/// The session group defaults to the persisted current group; the "All"
-/// aggregate view passes the owning group of the node being started so the
-/// running proxy follows that node without leaving the All view.
-#[tauri::command]
-async fn core_start(
-    state: State<'_, AppState>,
-    target_group_id: Option<i64>,
-) -> Result<RunResult, String> {
+/// Start (or rebuild, when already running) the core with a group's session
+/// and remember it: the resolved selection is written back to
+/// `selected_by_group` (so the UI shows it as current) and the session is
+/// recorded for the next launch (see `resume_last_session`). Shared by the
+/// Start command and the launch auto-resume.
+async fn start_core_session(state: &AppState, group_id: i64) -> Result<RunResult, String> {
     let settings = state.settings();
-    let group_id = target_group_id.unwrap_or(settings.current_group_id);
     let rule_assets = if settings.mode == "rule" {
         Some(state.ensure_rule_assets().await?)
     } else {
         None
     };
-    let (session_json, selected) =
-        state.build_session(group_id, rule_assets, settings.filter_ipv6)?;
+    let (session_json, selected) = {
+        let db = state.db.lock().map_err(|_| "db lock poisoned".to_string())?;
+        build_session(&db, group_id, rule_assets, settings.filter_ipv6)?
+    };
 
     let ctl = state.ctl.clone();
     // System proxy is NOT auto-enabled on start: the user controls it
@@ -1565,10 +1771,65 @@ async fn core_start(
     .await
     .map_err(|e| e.to_string())??;
 
+    let db = state.db.clone();
+    let chosen = selected.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+        let mut s = db.load_settings();
+        s.selected_by_group.insert(group_id, chosen.clone());
+        s.last_group_id = group_id;
+        s.last_node_id = chosen;
+        s.resume_on_launch = true;
+        db.save_settings(&s).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
     Ok(RunResult {
-        status: core_status_raw(&state),
+        status: core_status_raw(state),
         selected_node: Some(selected),
     })
+}
+
+/// Start the core again with the node that was in use when the app last
+/// exited. A node that no longer exists — deleted, or replaced by a
+/// subscription refresh — degrades to its group's fastest measured node
+/// (`build_session`). Failures are logged only: the window is already up
+/// and the user can start manually.
+async fn resume_last_session(state: &AppState) {
+    let s = state.settings();
+    if !s.resume_on_launch || s.last_node_id.is_empty() {
+        return;
+    }
+    // The remembered group can be gone too (e.g. a deleted subscription);
+    // the current view group is then the best remaining guess.
+    let remembered_alive = state
+        .db
+        .lock()
+        .ok()
+        .and_then(|db| db.group(s.last_group_id).ok().flatten())
+        .is_some();
+    let group_id = if remembered_alive {
+        s.last_group_id
+    } else {
+        s.current_group_id
+    };
+    if let Err(e) = start_core_session(state, group_id).await {
+        eprintln!("resume last session: {e}");
+    }
+}
+
+/// Start (or rebuild, when already running) the core with a group's session.
+/// The session group defaults to the persisted current group; the "All"
+/// aggregate view passes the owning group of the node being started so the
+/// running proxy follows that node without leaving the All view.
+#[tauri::command]
+async fn core_start(
+    state: State<'_, AppState>,
+    target_group_id: Option<i64>,
+) -> Result<RunResult, String> {
+    let group_id = target_group_id.unwrap_or(state.settings().current_group_id);
+    start_core_session(&state, group_id).await
 }
 
 /// Toggle the system proxy independently of the core lifecycle.
@@ -1605,6 +1866,7 @@ async fn proxy_set(
 
 #[tauri::command]
 async fn core_stop(state: State<'_, AppState>) -> Result<CoreStatusView, String> {
+    let db = state.db.clone();
     let ctl = state.ctl.clone();
     let proxy_on = state.proxy_on.clone();
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
@@ -1613,7 +1875,11 @@ async fn core_stop(state: State<'_, AppState>) -> Result<CoreStatusView, String>
             let _ = sysproxy::disable();
             *proxy_on.lock().unwrap() = false;
         }
-        Ok(())
+        // An explicit Stop must not be undone by the next launch.
+        let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+        let mut s = db.load_settings();
+        s.resume_on_launch = false;
+        db.save_settings(&s).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())??;
@@ -1812,6 +2078,15 @@ pub fn run() {
             app.manage(state);
             if sysproxy::leftover_at(app_state.settings().port) {
                 let _ = sysproxy::disable();
+            }
+            // Resume the node that was in use when the app last exited (the
+            // user quit while it was running) — a no-op when the core was
+            // stopped with an explicit Stop.
+            {
+                let resume_state = app_state.clone();
+                tauri::async_runtime::spawn(async move {
+                    resume_last_session(&resume_state).await;
+                });
             }
             // subscription auto-refresh scheduler (runs while the app lives)
             tauri::async_runtime::spawn(auto_update_loop(app_state.clone()));

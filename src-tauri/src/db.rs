@@ -118,6 +118,19 @@ pub struct Settings {
     #[serde(default)]
     pub route_profile_id: Option<i64>,
     pub selected_by_group: std::collections::HashMap<i64, String>,
+    /// Session group + node of the last core start, i.e. what was in use
+    /// while the core ran. `selected_by_group` is only the manual pick
+    /// (picking a row does not touch the running session), so the pair is
+    /// kept separately for the launch resume.
+    #[serde(default)]
+    pub last_group_id: i64,
+    #[serde(default)]
+    pub last_node_id: String,
+    /// The core was running when the app last exited: start it again at
+    /// launch with the remembered node. An explicit Stop clears it, so a
+    /// deliberately stopped core stays stopped.
+    #[serde(default)]
+    pub resume_on_launch: bool,
 }
 
 impl Default for Settings {
@@ -137,6 +150,9 @@ impl Default for Settings {
             auto_start: false,
             route_profile_id: None,
             selected_by_group: Default::default(),
+            last_group_id: 0,
+            last_node_id: String::new(),
+            resume_on_launch: false,
         }
     }
 }
@@ -662,6 +678,38 @@ impl Db {
         rows.collect()
     }
 
+    /// Node id with the lowest persisted delay inside a group, or None when
+    /// nothing there was ever measured successfully. Ownership mirrors
+    /// `latency_list`: a normal group reads its own rows, a strategy group
+    /// the rows of its member groups. A row whose node is gone, or that only
+    /// holds an error, can never win.
+    pub fn fastest_node(&self, group_id: i64) -> rusqlite::Result<Option<String>> {
+        let mut owners: Vec<i64> = if self.is_strategy(group_id)? {
+            self.member_ids(group_id)?
+        } else {
+            vec![group_id]
+        };
+        owners.sort_unstable();
+        owners.dedup();
+        if owners.is_empty() {
+            return Ok(None);
+        }
+        let placeholders = vec!["?"; owners.len()].join(",");
+        self.conn
+            .query_row(
+                &format!(
+                    "SELECT l.node_id FROM latency l
+                     JOIN nodes n ON n.id = l.node_id AND n.group_id = l.group_id
+                     WHERE l.group_id IN ({placeholders}) AND l.delay_ms IS NOT NULL
+                     ORDER BY l.delay_ms ASC, n.rowid ASC
+                     LIMIT 1"
+                ),
+                rusqlite::params_from_iter(owners.iter()),
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+    }
+
     /// Copy nodes (by id) from one group into another. Existing target
     /// nodes with the same id are left untouched. Returns
     /// (inserted, skipped_duplicates).
@@ -806,6 +854,52 @@ mod tests {
         // deleting the node removes its latency row
         db.delete_node(1, "node-a").unwrap();
         assert_eq!(db.list_latency(1).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn fastest_node_ignores_failures_and_aggregates_strategies() {
+        let db = open_tmp();
+        let a = db.create_group("组A", None).unwrap();
+        let b = db.create_group("组B", None).unwrap();
+        let node = |id: &str| NewNode {
+            id: id.into(),
+            r#type: "ss".into(),
+            remark: id.into(),
+            out: "{}".into(),
+        };
+        db.upsert_nodes(a, &[node("a1"), node("a2")]).unwrap();
+        db.upsert_nodes(b, &[node("b1")]).unwrap();
+        // nothing measured yet
+        assert_eq!(db.fastest_node(a).unwrap(), None);
+        // an error-only row can never win, an unmeasured one neither
+        db.upsert_latency(a, "a1", None, Some("timeout"), "1700000000").unwrap();
+        assert_eq!(db.fastest_node(a).unwrap(), None);
+        db.upsert_latency(a, "a2", Some(320), None, "1700000000").unwrap();
+        assert_eq!(db.fastest_node(a).unwrap().as_deref(), Some("a2"));
+        // a better measurement wins
+        db.upsert_latency(a, "a1", Some(90), None, "1700000001").unwrap();
+        assert_eq!(db.fastest_node(a).unwrap().as_deref(), Some("a1"));
+
+        // a strategy group reads its member groups' rows
+        let s = db
+            .create_strategy(a, "策略", "strategy", &format!("[{a},{b}]"))
+            .unwrap();
+        db.upsert_latency(b, "b1", Some(40), None, "1700000002").unwrap();
+        assert_eq!(db.fastest_node(s).unwrap().as_deref(), Some("b1"));
+        // an empty strategy group has no candidates
+        let s2 = db.create_strategy(a, "空", "strategy", "[]").unwrap();
+        assert_eq!(db.fastest_node(s2).unwrap(), None);
+
+        // a row whose node is gone can never win (delete_node clears rows,
+        // so seed this one directly to pin the join)
+        db.conn
+            .execute(
+                "INSERT INTO latency (group_id, node_id, delay_ms, error, tested_at)
+                 VALUES (?1, 'ghost', 5, NULL, '0')",
+                params![b],
+            )
+            .unwrap();
+        assert_eq!(db.fastest_node(b).unwrap().as_deref(), Some("b1"));
     }
 
     #[test]

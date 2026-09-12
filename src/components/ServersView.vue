@@ -232,6 +232,8 @@ const testingAll = ref(false);
 const sortByDelay = ref(true);
 /** unregister for the live per-node latency stream (see onMounted). */
 let unlistenLatency: (() => void) | undefined;
+/** core-status poll: shows a session resumed at launch (see onMounted). */
+let statusTimer: number | undefined;
 
 /** v6 heuristic mirror of the Rust filter (server without port). */
 function nodeIsV6(n: Node): boolean {
@@ -279,6 +281,22 @@ async function toggleSort(on: boolean) {
   sortByDelay.value = on;
 }
 
+/** Fastest node by the current latency map, falling back to the first row
+ *  (failed and untested nodes never win). Mirrors the backend's selection
+ *  fallback so the UI and the core agree on which node runs. */
+function pickFastest(list: Node[]): Node | undefined {
+  let best: Node | undefined;
+  let bestMs = Infinity;
+  for (const n of list) {
+    const ms = delayMap.value[n.id]?.delay_ms;
+    if (ms != null && ms < bestMs) {
+      bestMs = ms;
+      best = n;
+    }
+  }
+  return best ?? list[0];
+}
+
 function currentGroupId(): number {
   return settings.value?.current_group_id ?? 1;
 }
@@ -290,6 +308,18 @@ function selectedNodeId(): string | undefined {
 
 async function refreshStatus() {
   status.value = await coreStatus();
+  adoptRunning();
+}
+
+/** Poll the core so a session the app started on its own (launch
+ *  auto-resume) shows up here too. */
+async function pollStatus() {
+  try {
+    status.value = await coreStatus();
+    adoptRunning();
+  } catch {
+    /* backend not reachable yet */
+  }
 }
 
 async function loadAll() {
@@ -340,9 +370,14 @@ async function reloadNodes() {
   }
   const sel = selectedNodeId();
   if (sel && !nodes.value.find((n) => n.id === sel)) {
-    // stale selection (node deleted): fall back to first
-    await setNodeCurrent(id, nodes.value[0]?.id ?? "");
-    await loadSettings();
+    // stale selection (node deleted): fall back to the fastest measured
+    // node — the same rule the backend applies when starting (build_session
+    // in src-tauri/src/lib.rs)
+    const best = pickFastest(visibleNodes.value);
+    if (best) {
+      await setNodeCurrent(id, best.id);
+      await loadSettings();
+    }
   }
 }
 
@@ -411,6 +446,29 @@ function isRowCurrent(n: Node): boolean {
 function isActiveNode(n: Node): boolean {
   const a = activeNode.value;
   return !!a && a.group === n.group_id && a.id === n.id;
+}
+
+/** Mark the row a running session uses. Matched by id (then group): strategy
+ *  pseudo rows carry their strategy id as group_id, which the session group
+ *  need not share. */
+function markRunning(group: number, id: string) {
+  const row =
+    nodes.value.find((n) => n.id === id && n.group_id === group) ??
+    nodes.value.find((n) => n.id === id);
+  if (!row) return;
+  activeNode.value = { group: row.group_id, id: row.id };
+  if (isAllView()) {
+    allCurrent.value = { group: row.group_id, id: row.id };
+  }
+}
+
+/** Adopt the node a session the app started on its own runs — the launch
+ *  auto-resume brings the core up before the window does. A local pick or
+ *  switch owns the mark once it exists. */
+function adoptRunning() {
+  const s = status.value;
+  if (!s.running || activeNode.value || !s.node_id) return;
+  markRunning(s.group_id ?? 0, s.node_id);
 }
 
 const isVirtualCurrent = computed(() => (currentGroup()?.kind ?? "normal") !== "normal");
@@ -633,7 +691,7 @@ async function toggleStart() {
                 x.id === allCurrent.value!.id,
             )
           : undefined;
-        n = n ?? visibleNodes.value[0];
+        n = n ?? pickFastest(visibleNodes.value);
         if (n) {
           const g = runGroupFor(n);
           await setNodeCurrent(g, n.id);
@@ -648,11 +706,11 @@ async function toggleStart() {
         // (mirrors the core fallback) so the started node is marked.
         const sel = settings.value?.selected_by_group[target];
         if (!isVirtualCurrent && !sel) {
-          const first = visibleNodes.value[0];
-          if (first) {
-            await setNodeCurrent(target, first.id);
+          const pick = pickFastest(visibleNodes.value);
+          if (pick) {
+            await setNodeCurrent(target, pick.id);
             await loadSettings();
-            started = { group: first.group_id, id: first.id };
+            started = { group: pick.group_id, id: pick.id };
           }
         } else if (sel) {
           const m = nodes.value.find((x) => x.id === sel);
@@ -794,9 +852,12 @@ onMounted(async () => {
     },
   );
   await loadAll();
+  adoptRunning();
+  statusTimer = window.setInterval(pollStatus, 3000);
 });
 
 onBeforeUnmount(() => {
+  if (statusTimer) window.clearInterval(statusTimer);
   unlistenLatency?.();
 });
 </script>
