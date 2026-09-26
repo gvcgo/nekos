@@ -2,7 +2,8 @@
 //!
 //! - Linux: XDG `.desktop` entry under `$XDG_CONFIG_HOME/autostart`.
 //! - Windows: `HKCU\...\Run` value pointing at the executable.
-//! - macOS: a `LaunchAgent` plist loaded with `launchctl`.
+//! - macOS: a `LaunchAgent` plist scoped to the Aqua session
+//!   (`LimitLoadToSessionType`), loaded with `launchctl bootstrap gui/<uid>`.
 
 #[cfg(target_os = "linux")]
 mod linux_impl {
@@ -204,16 +205,11 @@ mod mac_impl {
             .output();
     }
 
-    /// Write (or refresh) the LaunchAgent and load it for the current session.
-    pub fn enable() -> Result<(), String> {
-        let exe = std::env::current_exe()
-            .map_err(|e| format!("current exe: {e}"))?
-            .to_string_lossy()
-            .into_owned();
-        let path = plist_path();
-        let dir = path.parent().unwrap_or(path.as_path());
-        std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-        let content = format!(
+    /// The LaunchAgent plist. `LimitLoadToSessionType=Aqua` keeps launchd
+    /// from starting the GUI app in non-GUI sessions (ssh, background
+    /// contexts) where it has no window server.
+    fn plist_content(exe: &str) -> String {
+        format!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
              <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \
              \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
@@ -221,13 +217,31 @@ mod mac_impl {
              \t<key>Label</key>\n\t<string>{LABEL}</string>\n\
              \t<key>ProgramArguments</key>\n\t<array>\n\t\t<string>{}</string>\n\t</array>\n\
              \t<key>RunAtLoad</key>\n\t<true/>\n\
+             \t<key>LimitLoadToSessionType</key>\n\t<string>Aqua</string>\n\
              </dict>\n</plist>\n",
-            xml_escape(&exe)
-        );
-        std::fs::write(&path, content)
+            xml_escape(exe)
+        )
+    }
+
+    /// Write (or refresh) the LaunchAgent for `exe` and load it into the
+    /// current GUI session. `HOME` decides where the plist lands (the app
+    /// writes it under the real `~/Library/LaunchAgents`).
+    fn enable_for(exe: &std::path::Path) -> Result<(), String> {
+        let path = plist_path();
+        let dir = path.parent().unwrap_or(path.as_path());
+        std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+        std::fs::write(&path, plist_content(&exe.to_string_lossy()))
             .map_err(|e| format!("write {}: {e}", path.display()))?;
+        // Best effort: the plist alone is enough from the next login, and
+        // bootstrapping an already-loaded agent fails harmlessly.
         launchctl_load();
         Ok(())
+    }
+
+    /// Write (or refresh) the LaunchAgent and load it for the current session.
+    pub fn enable() -> Result<(), String> {
+        let exe = std::env::current_exe().map_err(|e| format!("current exe: {e}"))?;
+        enable_for(&exe)
     }
 
     /// Remove the LaunchAgent (no-op when absent).
@@ -238,6 +252,78 @@ mod mac_impl {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(format!("remove {}: {e}", path.display())),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn plist_points_at_the_executable() {
+            let content = plist_content("/Applications/nekos.app/Contents/MacOS/nekos");
+            assert!(content.contains("<key>Label</key>\n\t<string>app.nekos.desktop</string>"));
+            assert!(content.contains(
+                "<string>/Applications/nekos.app/Contents/MacOS/nekos</string>"
+            ));
+            assert!(content.contains("<key>RunAtLoad</key>\n\t<true/>"));
+            // GUI-only session type: launchd must not start the app where
+            // there is no window server.
+            assert!(content.contains(
+                "<key>LimitLoadToSessionType</key>\n\t<string>Aqua</string>"
+            ));
+        }
+
+        #[test]
+        fn plist_escapes_xml() {
+            let content = plist_content("/tmp/a&b/<nekos>");
+            assert!(content.contains("<string>/tmp/a&amp;b/&lt;nekos&gt;</string>"));
+            assert!(!content.contains("<nekos>"));
+        }
+
+        /// Real-machine check of the LaunchAgent path: writes the plist
+        /// under a temp `HOME`, bootstraps it into the user's launchd
+        /// domain, and removes it again. `ProgramArguments` is `/usr/bin/true`
+        /// so `RunAtLoad` runs something harmless instead of this test
+        /// binary (which would recurse). Opt in with:
+        /// `cargo test --lib -- --ignored launchagent_round_trip`.
+        #[test]
+        #[ignore = "registers a LaunchAgent in the user's launchd domain"]
+        fn launchagent_round_trip() {
+            let home = std::env::temp_dir().join(format!("nekos-agent-test-{}", std::process::id()));
+            std::fs::create_dir_all(&home).unwrap();
+            let old_home = std::env::var_os("HOME");
+            std::env::set_var("HOME", &home);
+
+            let uid = current_uid().expect("id -u");
+            let loaded = || {
+                std::process::Command::new("launchctl")
+                    .args(["print", &format!("gui/{uid}/{LABEL}")])
+                    .output()
+                    .map(|out| out.status.success())
+                    .unwrap_or(false)
+            };
+
+            let result = std::panic::catch_unwind(|| {
+                assert!(!loaded(), "agent must not be registered before enable");
+                enable_for(std::path::Path::new("/usr/bin/true")).expect("enable");
+                assert!(plist_path().is_file(), "plist written under $HOME");
+                assert!(loaded(), "launchctl bootstrap must register the agent");
+                disable().expect("disable");
+                assert!(!plist_path().exists(), "plist removed");
+                assert!(!loaded(), "launchctl bootout must drop the agent");
+                // Disabling twice stays a no-op.
+                disable().expect("disable again");
+            });
+
+            match old_home {
+                Some(h) => std::env::set_var("HOME", h),
+                None => std::env::remove_var("HOME"),
+            }
+            std::fs::remove_dir_all(&home).ok();
+            if let Err(panic) = result {
+                std::panic::resume_unwind(panic);
+            }
         }
     }
 }

@@ -198,7 +198,7 @@ export interface Settings {
   auto_update_subscriptions?: boolean;
   auto_update_minutes?: number;
   language?: string; // zh | en
-  /** Launch at login (XDG autostart). */
+  /** Launch at login (XDG autostart on Linux, LaunchAgent on macOS). */
   auto_start?: boolean;
   selected_by_group: Record<number, string>;
   /** Active custom routing profile id; null/absent => built-in bypass-mainland. */

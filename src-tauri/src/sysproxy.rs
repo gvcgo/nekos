@@ -4,9 +4,11 @@
 //! - Windows: WinINET proxy keys under HKCU (takes effect system-wide for
 //!   WinINET/WinHTTP consumers), then broadcasts the change so running apps
 //!   notice immediately.
-//! - macOS: `networksetup` per network service; falls back to an
-//!   administrator-prompted `osascript` run when the plain call lacks the
-//!   privileges to change the service configuration.
+//! - macOS: `networksetup` per network service (web/secureweb/socksfirewall),
+//!   with the applied setting read back (exit codes are not trustworthy —
+//!   networksetup succeeds on services it ignores). A batch refused for lack
+//!   of privileges is replayed in ONE administrator-prompted `osascript` run;
+//!   other failures never prompt.
 //! - Other platforms: not implemented.
 
 #[cfg(target_os = "linux")]
@@ -167,10 +169,33 @@ mod mac_impl {
     const HOST: &str = "127.0.0.1";
     const NETWORKSETUP: &str = "/usr/sbin/networksetup";
 
-    /// Run networksetup, falling back to an admin-prompted osascript run when
-    /// the current user is not allowed to change network service settings
-    /// (macOS requires admin rights for these mutations).
-    fn networksetup(args: &[&str]) -> Result<(), String> {
+    /// True when networksetup refused *because the caller lacks the rights*
+    /// to change network settings. Any other failure (unknown service,
+    /// invalid parameters — e.g. the output banner mistake this module used
+    /// to make) is a plain error and must never raise a password dialog.
+    fn privilege_denied(stderr: &str) -> bool {
+        let s = stderr.to_ascii_lowercase();
+        [
+            "must be running as root",
+            "requires administrator",
+            "not authorized",
+            "authorization",
+            "operation not permitted",
+            "permission denied",
+            "sudo",
+        ]
+        .iter()
+        .any(|marker| s.contains(marker))
+    }
+
+    /// POSIX single-quote one word for the shell (`do shell script` runs
+    /// `/bin/sh`); service names contain spaces and parentheses.
+    fn sh_quote(s: &str) -> String {
+        format!("'{}'", s.replace('\'', r"'\''"))
+    }
+
+    /// Run one networksetup argv as the current user.
+    fn run_plain(args: &[String]) -> Result<(), String> {
         let out = std::process::Command::new(NETWORKSETUP)
             .args(args)
             .output()
@@ -178,15 +203,56 @@ mod mac_impl {
         if out.status.success() {
             return Ok(());
         }
-        // Privilege failure → ask the user once through the GUI.
-        let quoted: Vec<String> = args
+        let err = String::from_utf8_lossy(&out.stderr);
+        let err = err.trim();
+        Err(if err.is_empty() {
+            format!("networksetup {} 退出码 {}", args.join(" "), out.status)
+        } else {
+            err.to_string()
+        })
+    }
+
+    /// Run a whole mutation batch, escalating to ONE administrator-prompted
+    /// run when — and only when — the plain run was refused for lack of
+    /// rights. Doing the escalation inside the per-command helper prompts
+    /// once per networksetup call (18 password dialogs for one enable).
+    fn run_batch(cmds: &[Vec<String>]) -> Result<(), String> {
+        let mut errors = Vec::new();
+        let mut denied: Option<String> = None;
+        for args in cmds {
+            match run_plain(args) {
+                Ok(()) => {}
+                Err(e) if privilege_denied(&e) => denied = Some(e),
+                Err(e) => errors.push(format!("{}: {e}", args.join(" "))),
+            }
+        }
+        if let Some(e) = denied {
+            return run_admin(cmds).map_err(|e2| format!("{e}；管理员回退失败: {e2}"));
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
+    }
+
+    /// Replay the batch in a single `do shell script … with administrator
+    /// privileges` run: one password prompt for the whole batch.
+    fn run_admin(cmds: &[Vec<String>]) -> Result<(), String> {
+        let body = cmds
             .iter()
-            .map(|a| format!("\"{}\"", a.replace('\\', "\\\\").replace('"', "\\\"")))
-            .collect();
+            .map(|args| {
+                std::iter::once(NETWORKSETUP)
+                    .chain(args.iter().map(String::as_str))
+                    .map(sh_quote)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
         let script = format!(
-            "do shell script \"{} {}\" with administrator privileges",
-            NETWORKSETUP,
-            quoted.join(" ")
+            "do shell script \"{}\" with administrator privileges",
+            body.replace('"', "\\\"")
         );
         let out = std::process::Command::new("osascript")
             .arg("-e")
@@ -200,6 +266,24 @@ mod mac_impl {
         }
     }
 
+    /// Proxy sub-commands driven on every network service.
+    const KINDS: [&str; 3] = ["web", "secureweb", "socksfirewall"];
+
+    /// Parse `networksetup -listallnetworkservices` stdout. It prints an
+    /// explanatory banner ("An asterisk (*) denotes …") *before* the list,
+    /// and marks disabled services with a leading asterisk; neither is a
+    /// service. Feeding the banner back into networksetup fails with
+    /// "The parameters were not valid", which used to trigger the
+    /// administrator fallback on every proxy toggle.
+    fn parse_services(stdout: &str) -> Vec<String> {
+        stdout
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('*') && !l.starts_with("An asterisk"))
+            .map(str::to_string)
+            .collect()
+    }
+
     /// Network services that can carry a proxy (skips disabled/`*` entries).
     fn services() -> Result<Vec<String>, String> {
         let out = std::process::Command::new(NETWORKSETUP)
@@ -209,100 +293,281 @@ mod mac_impl {
         if !out.status.success() {
             return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
         }
-        Ok(String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty() && !l.starts_with('*'))
-            .map(str::to_string)
-            .collect())
-    }
-
-    fn for_each_service(apply: &dyn Fn(&str) -> Result<(), String>) -> Result<(), String> {
-        let list = services()?;
+        let list = parse_services(&String::from_utf8_lossy(&out.stdout));
         if list.is_empty() {
             return Err("未找到可用的网络服务".into());
         }
-        let mut failures = Vec::new();
-        for svc in &list {
-            if let Err(e) = apply(svc) {
-                failures.push(format!("{svc}: {e}"));
+        Ok(list)
+    }
+
+    /// Mutations that route every service's HTTP/HTTPS/SOCKS traffic through
+    /// `127.0.0.1:port`.
+    fn enable_cmds(list: &[String], port: &str) -> Vec<Vec<String>> {
+        let mut cmds = Vec::new();
+        for svc in list {
+            for kind in KINDS {
+                cmds.push(vec![
+                    format!("-set{kind}proxy"),
+                    svc.clone(),
+                    HOST.to_string(),
+                    port.to_string(),
+                ]);
+                cmds.push(vec![
+                    format!("-set{kind}proxystate"),
+                    svc.clone(),
+                    "on".into(),
+                ]);
             }
         }
-        if failures.len() == list.len() {
-            Err(failures.join("; "))
-        } else if failures.is_empty() {
-            Ok(())
-        } else {
-            // Partial success (some services reject proxy config); the ones
-            // that applied are the important ones, so surface but succeed.
-            eprintln!("system proxy: {}", failures.join("; "));
-            Ok(())
+        cmds
+    }
+
+    /// Mutations that turn every service's proxy state off.
+    fn disable_cmds(list: &[String]) -> Vec<Vec<String>> {
+        let mut cmds = Vec::new();
+        for svc in list {
+            for kind in KINDS {
+                cmds.push(vec![
+                    format!("-set{kind}proxystate"),
+                    svc.clone(),
+                    "off".into(),
+                ]);
+            }
         }
+        cmds
+    }
+
+    /// Read back one service's proxy state: `(enabled, server, port)`.
+    /// `None` when networksetup cannot report it.
+    fn proxy_state(svc: &str, kind: &str) -> Option<(bool, String, String)> {
+        let out = std::process::Command::new(NETWORKSETUP)
+            .args([&format!("-get{kind}proxy"), svc])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        let (mut enabled, mut server, mut port) = (false, String::new(), String::new());
+        for line in text.lines() {
+            let line = line.trim();
+            if let Some(v) = line.strip_prefix("Enabled:") {
+                enabled = v.trim() == "Yes";
+            } else if let Some(v) = line.strip_prefix("Server:") {
+                server = v.trim().to_string();
+            } else if let Some(v) = line.strip_prefix("Port:") {
+                port = v.trim().to_string();
+            }
+        }
+        Some((enabled, server, port))
+    }
+
+    /// Read back one service's web-proxy state.
+    fn web_proxy(svc: &str) -> Option<(bool, String, String)> {
+        proxy_state(svc, "web")
+    }
+
+    /// How many services route web traffic through `host:port` right now.
+    fn web_proxy_at(list: &[String], host: &str, port: &str) -> usize {
+        list.iter()
+            .filter(|svc| web_proxy(svc).is_some_and(|(on, h, p)| on && h == host && p == port))
+            .count()
     }
 
     pub fn enable(port: u16) -> Result<(), String> {
+        let list = services()?;
         let port = port.to_string();
-        for_each_service(&|svc| {
-            for kind in ["web", "secureweb", "socksfirewall"] {
-                networksetup(&[
-                    &format!("-set{kind}proxy"),
-                    svc,
-                    HOST,
-                    &port,
-                ])?;
-                networksetup(&[&format!("-set{kind}proxystate"), svc, "on"])?;
-            }
-            Ok(())
-        })
+        let applied = run_batch(&enable_cmds(&list, &port));
+        // networksetup exits 0 for services it silently ignores, so the
+        // read-back decides, not the exit codes: at least one service must
+        // actually route through us. Anything else means that service
+        // cannot carry a proxy (Thunderbolt Bridge, serial ports) — the
+        // ones that applied are the ones that matter.
+        if web_proxy_at(&list, HOST, &port) == 0 {
+            return Err(match applied {
+                Err(e) => e,
+                Ok(()) => "networksetup 未生效：没有网络服务接受代理设置".into(),
+            });
+        }
+        if let Err(e) = applied {
+            eprintln!("system proxy（部分服务失败）: {e}");
+        }
+        Ok(())
     }
 
     pub fn disable() -> Result<(), String> {
-        for_each_service(&|svc| {
-            for kind in ["web", "secureweb", "socksfirewall"] {
-                networksetup(&[&format!("-set{kind}proxystate"), svc, "off"])?;
-            }
-            Ok(())
-        })
+        let list = services()?;
+        let applied = run_batch(&disable_cmds(&list));
+        let still_on = list
+            .iter()
+            .filter(|svc| web_proxy(svc).is_some_and(|(on, ..)| on))
+            .count();
+        if still_on > 0 {
+            return Err(match applied {
+                Err(e) => e,
+                Ok(()) => format!("仍有 {still_on} 个网络服务的代理处于开启状态"),
+            });
+        }
+        if let Err(e) = applied {
+            eprintln!("system proxy（部分服务失败）: {e}");
+        }
+        Ok(())
     }
 
     /// True when any network service still routes web traffic through
     /// 127.0.0.1:port with the proxy enabled (a crash could not run
     /// disable). Startup restores it so traffic does not hit a dead
-    /// orphaned core after reaping.
+    /// orphaned core after reaping. Other clients' proxies on other ports
+    /// are none of our business.
     pub fn leftover_at(port: u16) -> bool {
         let Ok(list) = services() else {
             return false;
         };
-        let port = port.to_string();
-        for svc in &list {
-            let Ok(out) = std::process::Command::new(NETWORKSETUP)
-                .args(["-getwebproxy", svc])
-                .output()
-            else {
-                continue;
-            };
-            if !out.status.success() {
-                continue;
-            }
-            let text = String::from_utf8_lossy(&out.stdout);
-            let mut enabled = false;
-            let mut host_ok = false;
-            let mut port_ok = false;
-            for line in text.lines() {
-                let line = line.trim();
-                if let Some(v) = line.strip_prefix("Enabled:") {
-                    enabled = v.trim() == "Yes";
-                } else if let Some(v) = line.strip_prefix("Server:") {
-                    host_ok = v.trim() == HOST;
-                } else if let Some(v) = line.strip_prefix("Port:") {
-                    port_ok = v.trim() == port;
+        web_proxy_at(&list, HOST, &port.to_string()) > 0
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// Real `networksetup -listallnetworkservices` stdout: the banner and
+        /// disabled (asterisk-prefixed) services are not services. Feeding
+        /// the banner back to networksetup fails with "The parameters were
+        /// not valid" (verified on macOS 26.7), which used to escalate to an
+        /// administrator prompt on every proxy toggle.
+        #[test]
+        fn banner_and_disabled_services_are_skipped() {
+            let stdout = "An asterisk (*) denotes that a network service is disabled.\n\
+                          Built-in Serial Port (0)\n\
+                          *Thunderbolt Bridge\n\
+                          Ethernet\n\
+                          Wi-Fi\n";
+            assert_eq!(
+                parse_services(stdout),
+                vec!["Built-in Serial Port (0)", "Ethernet", "Wi-Fi"]
+            );
+        }
+
+        /// Only privilege refusals may raise a password dialog; parameter
+        /// errors (the real text for the banner bug) must not.
+        #[test]
+        fn only_privilege_failures_escalate() {
+            assert!(!privilege_denied(
+                "** Error: The parameters were not valid."
+            ));
+            assert!(privilege_denied(
+                "** Error: You must be running as root to change the proxy settings."
+            ));
+            assert!(privilege_denied("Permission denied"));
+        }
+
+        #[test]
+        fn shell_words_are_quoted() {
+            assert_eq!(sh_quote("Wi-Fi"), "'Wi-Fi'");
+            assert_eq!(
+                sh_quote("Built-in Serial Port (0)"),
+                "'Built-in Serial Port (0)'"
+            );
+            assert_eq!(sh_quote("it's"), r"'it'\''s'");
+        }
+
+        #[test]
+        fn enable_and_disable_command_sets() {
+            let list = vec!["Wi-Fi".to_string()];
+            let on = enable_cmds(&list, "2080");
+            assert_eq!(on.len(), 6, "set + state for each of the 3 kinds");
+            assert_eq!(on[0], vec!["-setwebproxy", "Wi-Fi", "127.0.0.1", "2080"]);
+            assert_eq!(on[1], vec!["-setwebproxystate", "Wi-Fi", "on"]);
+            assert!(on.iter().any(|c| c[0] == "-setsocksfirewallproxy"));
+            let off = disable_cmds(&list);
+            assert_eq!(off.len(), 3);
+            assert!(off.iter().all(|c| c[2] == "off"));
+        }
+
+        /// The real service list on this machine must survive the banner
+        /// filter (read-only; no proxy state is touched).
+        #[test]
+        fn real_service_list_has_no_banner() {
+            let list = services().expect("networksetup -listallnetworkservices");
+            assert!(!list.is_empty());
+            assert!(
+                !list.iter().any(|s| s.starts_with("An asterisk")),
+                "banner leaked into the service list: {list:?}"
+            );
+            assert!(!list.iter().any(|s| s.starts_with('*')));
+        }
+
+        /// Real-machine round trip of the whole macOS proxy path: enable,
+        /// read back, disable, then put every service back as it was.
+        /// Opt-in because it mutates the machine's proxy settings:
+        /// `cargo test --lib -- --ignored system_proxy_round_trip`.
+        #[test]
+        #[ignore = "mutates the machine's system proxy settings (restored afterwards)"]
+        fn system_proxy_round_trip() {
+            const PORT: u16 = 65001;
+            let list = services().expect("service list");
+            // Snapshot before touching anything, restored at the end.
+            let snapshot: Vec<(String, Vec<(&str, (bool, String, String))>)> = list
+                .iter()
+                .map(|svc| {
+                    (
+                        svc.clone(),
+                        KINDS
+                            .iter()
+                            .map(|k| {
+                                (
+                                    *k,
+                                    proxy_state(svc, k)
+                                        .unwrap_or((false, String::new(), String::new())),
+                                )
+                            })
+                            .collect(),
+                    )
+                })
+                .collect();
+
+            fn restore(snapshot: &[(String, Vec<(&str, (bool, String, String))>)]) {
+                for (svc, kinds) in snapshot {
+                    for (kind, (on, server, port)) in kinds {
+                        if !server.is_empty() {
+                            let _ = run_plain(&[
+                                format!("-set{kind}proxy"),
+                                svc.clone(),
+                                server.clone(),
+                                port.clone(),
+                            ]);
+                        }
+                        let _ = run_plain(&[
+                            format!("-set{kind}proxystate"),
+                            svc.clone(),
+                            if *on { "on".into() } else { "off".into() },
+                        ]);
+                    }
                 }
             }
-            if enabled && host_ok && port_ok {
-                return true;
+
+            let result = std::panic::catch_unwind(|| {
+                enable(PORT).expect("enable");
+                assert!(
+                    web_proxy_at(&list, HOST, &PORT.to_string()) > 0,
+                    "enable did not take effect on any service"
+                );
+                assert!(leftover_at(PORT), "leftover_at must see our own route");
+                disable().expect("disable");
+                assert_eq!(
+                    list.iter()
+                        .filter(|svc| web_proxy(svc).is_some_and(|(on, ..)| on))
+                        .count(),
+                    0,
+                    "disable left a proxy enabled"
+                );
+                assert!(!leftover_at(PORT));
+            });
+            restore(&snapshot);
+            if let Err(panic) = result {
+                std::panic::resume_unwind(panic);
             }
         }
-        false
     }
 }
 

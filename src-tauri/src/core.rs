@@ -7,7 +7,7 @@
 //! node switching while running is the core's in-process rebuild path.
 //! The `version` banner stays a one-shot CLI call — stateless and cheap.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
@@ -180,14 +180,12 @@ impl CoreCtl {
                 return PathBuf::from(path);
             }
         }
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(Path::to_path_buf));
         // Dev layout: repo/core/bin/nekos-core (built by `go build -o`).
-        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let dev = manifest.join("../core/bin/nekos-core");
-        if dev.is_file() {
-            return dev;
-        }
-        // Fall back to PATH so a system-installed core also works.
-        PathBuf::from("nekos-core")
+        let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../core/bin/nekos-core");
+        resolve_binary(exe_dir.as_deref(), &dev)
     }
 
     /// `nekos-core version` banner (one-shot CLI; does not need the daemon).
@@ -379,6 +377,34 @@ fn rpc_call(
         .ok_or_else(|| format!("core rpc {method}: response without result: {text:?}"))
 }
 
+/// The sidecar file name in a bundle: the tauri bundler drops the target
+/// triple from `externalBin` entries (`nekos-core-<triple>` → `nekos-core`)
+/// and installs it next to the main binary — `nekos.app/Contents/MacOS/` on
+/// macOS, the AppImage/deb `usr/bin` on Linux, the install dir on Windows.
+fn sidecar_path(exe_dir: &Path) -> PathBuf {
+    exe_dir.join(if cfg!(windows) {
+        "nekos-core.exe"
+    } else {
+        "nekos-core"
+    })
+}
+
+/// Probe order for the control-process binary: the sidecar shipped next to
+/// the running executable (packaged app) → the dev build under the repo →
+/// the bare name, resolved through `PATH` (system install).
+fn resolve_binary(exe_dir: Option<&Path>, dev: &Path) -> PathBuf {
+    if let Some(dir) = exe_dir {
+        let sidecar = sidecar_path(dir);
+        if sidecar.is_file() {
+            return sidecar;
+        }
+    }
+    if dev.is_file() {
+        return dev.to_path_buf();
+    }
+    PathBuf::from("nekos-core")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -451,5 +477,37 @@ mod tests {
         // correct token works
         rpc_call(&ctl.rpc, &conn, "core.status", serde_json::json!({})).expect("status");
         ctl.shutdown();
+    }
+
+    /// Packaged builds must use the sidecar next to their own executable —
+    /// the compiled-in dev path exists only on the build machine, so
+    /// `nekos.app/Contents/MacOS/nekos-core` (and the deb/NSIS/AppImage
+    /// layouts) must win over it whenever it is present.
+    #[test]
+    fn sidecar_next_to_executable_wins_over_dev_path() {
+        let dir = std::env::temp_dir().join(format!("nekos-sidecar-test-{}", std::process::id()));
+        let sidecar_dir = dir.join("bundle");
+        let dev_dir = dir.join("repo/core/bin");
+        std::fs::create_dir_all(&sidecar_dir).unwrap();
+        std::fs::create_dir_all(&dev_dir).unwrap();
+        let dev = dev_dir.join("nekos-core");
+        std::fs::write(&dev, b"#!/bin/sh\n").unwrap();
+        assert_eq!(dev, resolve_binary(Some(&sidecar_dir), &dev));
+
+        // Same directory name as the entry the bundler installs.
+        let sidecar = sidecar_path(&sidecar_dir);
+        assert_eq!(sidecar.file_name().unwrap(), "nekos-core");
+        std::fs::write(&sidecar, b"#!/bin/sh\n").unwrap();
+        assert_eq!(sidecar, resolve_binary(Some(&sidecar_dir), &dev));
+
+        // No sidecar and no dev build → the bare name, resolved via PATH.
+        let empty = dir.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        let missing_dev = dir.join("gone/nekos-core");
+        assert_eq!(
+            PathBuf::from("nekos-core"),
+            resolve_binary(Some(&empty), &missing_dev)
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

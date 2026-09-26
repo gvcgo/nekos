@@ -15,6 +15,17 @@ core/           Go 控制进程（parser / builder / runtime / JSON-RPC）
 docs/           架构与路线图
 ```
 
+## 构建与打包
+
+```bash
+./build.sh            # 本机调试：构建 Go 内核 + `tauri dev`
+./build.sh release    # 本机 release 二进制（src-tauri/target/release/nekos）
+./build.sh core       # 只重建 Go 内核（core/bin/nekos-core）
+./pack.sh             # 本机 OS 打包（core sidecar + tauri bundle：deb/rpm/AppImage | app+dmg | nsis）
+./pack-macos.sh       # macOS 通用 dmg（x86_64 + arm64 单一 dmg；只编译并打印 dmg 路径）
+./pack-arch.sh        # Arch Linux pacman 包（复用 pack.sh 的 deb 重封装）
+```
+
 ## 状态
 
 P0 进行中：见 [roadmap.md](docs/roadmap.md)。

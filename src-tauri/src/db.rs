@@ -110,7 +110,7 @@ pub struct Settings {
     /// UI language: zh | en
     #[serde(default = "default_language")]
     pub language: String,
-    /// Launch at user login (XDG autostart on Linux).
+    /// Launch at user login (XDG autostart on Linux, LaunchAgent on macOS).
     #[serde(default = "default_false")]
     pub auto_start: bool,
     /// Active routing profile id used by rule mode; None => built-in

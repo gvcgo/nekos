@@ -7,7 +7,7 @@
 目标：输入「3 条测试 URI/任意订阅链接」，产出「可用代理客户端」的最小闭环。
 
 - [x] 架构与决策文档（docs/architecture.md）
-- [x] Core: go module 引入 sing-box v1.14.0（库模式：`box.New/Start/Close` + `option.Options` 类型校验 + `include.Context`，无外部 CLI sidecar）[go.mod 依赖 + build/run/urltest 库调用即落地]
+- [x] Core: go module 引入 sing-box（库模式：`box.New/Start/Close` + `option.Options` 类型校验 + `include.Context`，无外部 CLI sidecar）[go.mod 依赖 + build/run/urltest 库调用即落地]；版本 v1.14.0 引入，2026-09-26 bump 至 **v1.14.2**（回归：真订阅 204 节点解析/测速 + 双协议 204 通过）
 - [x] Core: parser——anytls/trojan/vless 分享链接 → sing-box outbound JSON（含用户测试 URI 单测；ws `ed` 保留在 path 的实测映射）
 - [ ] Core: parser 扩展 vmess/ss/ssr/hysteria2/tuic/wireguard/naive 等（复用 transport/registry 骨架）
 - [x] Core: builder——session → sing-box option（mixed/socks 入站 + 选中节点出站 + direct/block）
@@ -54,8 +54,11 @@
 
 ## P4 — 平台与发布
 - [ ] Windows 适配：系统代理（HKCU WinINET 注册表 + InternetSetOption 广播，代码已落地 [2026-09-08]）；自启（HKCU Run）已落地；余 wintun、UAC 提权重启 core、NSIS/MSI（需 Windows 真机验证）
-- [ ] macOS 适配：系统代理（networksetup 逐服务设置 + osascript 管理员回退，代码已落地 [2026-09-08]）；自启（LaunchAgent + launchctl）已落地；余 TUN 提权提示与真机验证
-- [ ] 打包与发布：tauri bundler（deb/rpm/AppImage → NSIS → dmg）+ GitHub Actions 矩阵 + core 交叉编译 sidecar 布局已备好：pack.sh（core sidecar 交叉编译 + tauri bundle，打包时经 --config 临时开启 bundle.active）；图标集 icns/ico 就绪；余 CI 矩阵与各 OS 真机构建验证
+- [x] macOS 适配（真机验证 2026-09-26，macOS 26.7/x86_64，见 architecture §8.2）：系统代理（networksetup
+      逐服务 web/secureweb/socks + 读回校验；仅权限类失败才整批单次 osascript 提权；横幅行误判服务与逐命令弹窗已修）、
+      自启（LaunchAgent + Aqua 会话 + launchctl bootstrap/bootout）、打包 .app 的 sidecar 解析（exe 同目录优先）、
+      Dock 点击恢复窗口（RunEvent::Reopen）；构建/测试/打包三链路真机通过。余 TUN 提权提示（TUN 整体未做，P2）
+- [ ] 打包与发布：tauri bundler（deb/rpm/AppImage → NSIS → dmg）+ GitHub Actions 矩阵 + core 交叉编译 sidecar 布局已备好：pack.sh（core sidecar 交叉编译 + tauri bundle，打包时经 --config 临时开启 bundle.active）；macOS 通用包 pack-macos.sh（x86_64+arm64：Go sidecar lipo + `tauri build --target universal-apple-darwin`，产物双架构 lipo 断言）[2026-09-26]；图标集 icns/ico 就绪；余 CI 矩阵与各 OS 真机构建验证
 - [x] i18n（zh-CN/en）：组件内双语文案 + 设置项即时切换已落地 [2026-09-08]；主题未做
 - [ ] 自动更新（tauri updater + core 二进制随版本）
 

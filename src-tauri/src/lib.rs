@@ -2187,10 +2187,32 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    app.run(|app_handle, event| {
-        if let tauri::RunEvent::ExitRequested { .. } = event {
+    app.run(|app_handle, event| match event {
+        tauri::RunEvent::ExitRequested { .. } => {
             let state = app_handle.state::<AppState>();
             shutdown_all(&state);
         }
+        // macOS: clicking the Dock icon of an app whose window is hidden or
+        // gone must bring the window back (the tray icon is the only other
+        // way in — Dock activation is the platform-native restore, and
+        // without this the app looks dead after a close-to-tray).
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::Reopen { .. } => {
+            match app_handle.get_webview_window("main") {
+                Some(window) => {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+                // Window destroyed (close_to_tray turned off) → rebuild it
+                // from the same config the first one came from.
+                None => {
+                    if let Some(config) = app_handle.config().app.windows.first().cloned() {
+                        let _ = tauri::WebviewWindowBuilder::from_config(app_handle, &config)
+                            .and_then(|builder| builder.build());
+                    }
+                }
+            }
+        }
+        _ => {}
     });
 }

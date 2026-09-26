@@ -10,8 +10,8 @@
 | UI 壳 | Tauri v2（Rust 后端 + WebView） | 用户选择；webkit2gtk-4.1 已具备 |
 | 前端 | Vue 3 + TypeScript + Vite | 用户选择 |
 | 内核集成 | **Go 控制进程内嵌 sing-box 为库**（nekobox 同款），非 CLI sidecar | 用户选择；理由见 §3 |
-| sing-box 版本 | **v1.14.0**（最新稳定），Go module 直接依赖 | 2026-09 已核实：v1.15.0-alpha.2 在途 |
-| 平台 | Linux 优先（本机可端到端验证）→ Windows/macOS | 用户选择 |
+| sing-box 版本 | **v1.14.2**（最新稳定），Go module 直接依赖 | 2026-09-26 核实：v1.14.2 发布于 2026-09-24；最新预发布 v1.15.0-alpha.8（不采用） |
+| 平台 | Linux 优先（本机可端到端验证）→ Windows/macOS；macOS 壳层已真机验证（2026-09-26，见 §8.2）→ Windows | 用户选择 |
 | MVP 闭环 | 导入(链接/订阅) → 节点列表管理 → 选节点启动 → 本机入站 + 系统代理 → 测速 | 用户未指定，取 v2rayN 最小可用子集 |
 | 数据 | SQLite；节点存**归一化 NodeSpec**，运行时由 core 转 sing-box option | §5 |
 | 控制面 | JSON-RPC 2.0 over 127.0.0.1 随机端口 + token；SSE 事件推送 | §6 |
@@ -181,10 +181,10 @@ DNS：P0 采用 sing-box 默认（host 解析走代理出口）加国内域名�
 
 | 能力 | Linux(P0) | Windows(P1+) | macOS(P1+) |
 |---|---|---|---|
-| 系统代理 | GSettings `org.gnome.system.proxy`(+KDE 探测，暂降级文档) | 注册表 `HKCU\...\Internet Settings` | `networksetup -setwebproxy…` |
-| TUN 提权 | pkexec 拉起 core(root) + tun 设备 | 提权重启 core(UAC)，wintun | core 提权(sysexits/launchd 提示) |
-| 开机自启 | XDG autostart .desktop | 注册表 Run / 计划任务 | LaunchAgent |
-| 托盘 | libappindicator (tauri-plugin) | 内置 | 内置 |
+| 系统代理 | GSettings `org.gnome.system.proxy`(+KDE 探测，暂降级文档) | 注册表 `HKCU\...\Internet Settings` | `networksetup` web/secureweb/socks 逐服务 + 读回校验；权限类失败才单次 osascript 提权（§8.2，真机验证） |
+| TUN 提权 | pkexec 拉起 core(root) + tun 设备 | 提权重启 core(UAC)，wintun | 未做（TUN 整体在 P2） |
+| 开机自启 | XDG autostart .desktop | 注册表 Run / 计划任务 | LaunchAgent（Aqua 会话）+ `launchctl bootstrap/bootout`（§8.2，真机验证） |
+| 托盘 | libappindicator (tauri-plugin) | 内置 | 内置（Dock 点击经 `RunEvent::Reopen` 恢复窗口，§8.2） |
 
 「关闭最小化到托盘」「开机不自启直到用户开启」等细节同 v2rayN。
 
@@ -208,12 +208,104 @@ DNS：P0 采用 sing-box 默认（host 解析走代理出口）加国内域名�
 退出条件：Arch 的 webkit2gtk 修掉该除零后删除守卫；调试时可用 `WEBKIT_FORCE_VBLANK_TIMER=0`
 显式退回原行为做对照。
 
+### 8.2 macOS 桌面壳：系统代理 / 自启 / 打包（2026-09-26 真机验证，macOS 26.7 x86_64）
+
+事实与结论（真机实测，非推断；测试与验证记录见本节末尾）：
+
+系统代理（`src-tauri/src/sysproxy.rs` 的 `mac_impl`）
+- `networksetup -listallnetworkservices` 的 stdout **首行是说明横幅**
+  （`An asterisk (*) denotes that a network service is disabled.`），其后才是服务名，禁用服务带 `*` 前缀。
+  旧实现只过滤 `*` 前缀 → 横幅被当成服务名回灌 networksetup，必然失败
+  （实测 `** Error: The parameters were not valid.`，退出码 4），并因此把**每次代理开关**都拖进
+  osascript 管理员对话框（逐命令回退，单次 enable 最多 18 次弹窗）。现由 `parse_services` 一并过滤。
+- 只有**权限类**失败才提权（`privilege_denied` 匹配 must be running as root / not authorized /
+  permission denied 等）；参数类错误直接报错，绝不弹窗。提权是**整批一次**
+  `do shell script … with administrator privileges`（单个密码框），命令用 POSIX 单引号转义
+  （服务名含空格与括号）。
+- 成功判定以**读回**为准（`-getwebproxy` 的 Enabled/Server/Port）：networksetup 对不能配置代理的服务
+  （Thunderbolt Bridge、串口）静默返回 0，退出码不可信。`enable` 要求至少一个服务真的指向本机端口，
+  否则报错；部分服务失败只记 stderr。`disable` 要求读回无任何服务仍处于开启态。
+- 实测：管理员组普通用户下 networksetup 读写代理（web/secureweb/socksfirewall）**无需提权**，
+  提权回退属兜底路径。
+- `leftover_at(port)` 复用同一读回：仅当某服务 web 代理 Enabled 且指向 `127.0.0.1:<本机端口>` 才为真
+  （其它客户端的代理残留与本项目无关）。
+
+开机自启（`src-tauri/src/autostart.rs` 的 `mac_impl`）
+- `~/Library/LaunchAgents/app.nekos.desktop.plist`，`RunAtLoad`，并加
+  `LimitLoadToSessionType=Aqua`：避免 launchd 在无窗口服务器的会话（ssh/后台）拉起 GUI。
+- `launchctl bootstrap gui/<uid> <plist>` 与 `bootout gui/<uid>/<label>` 在 macOS 26.7 实测可用
+  （plist 路径不限于 `~/Library/LaunchAgents`）。bootstrap 保持 best-effort：plist 落盘即已保证下次登录生效，
+  重复 bootstrap 会无害失败。
+
+打包与内核解析
+- tauri bundler 把 `externalBin` 的 `nekos-core-<triple>` 去掉三元组后缀，放到主程序旁
+  （macOS = `nekos.app/Contents/MacOS/nekos-core`；Linux/deb/AppImage 与 Windows 同理）。
+- core 解析顺序：**exe 同目录 sidecar → 仓库 dev 路径（编译期 `CARGO_MANIFEST_DIR`，只在开发机存在）→ PATH**。
+  旧实现把 dev 路径放在 sidecar 之前：打包分发到用户机（无该路径）会找不到内核。
+
+桌面壳行为
+- Dock 点击经 `tauri::RunEvent::Reopen` 恢复主窗口（隐藏 → show+focus；窗口已被销毁 → 按原 WindowConfig 重建），
+  否则关闭到托盘后 Dock 点击毫无反应。
+- 关闭到托盘、退出恢复系统代理、core 子进程 stdin-EOF 自退等行为与 Linux 一致。
+
+通用（universal: x86_64 + arm64）打包
+- Go 内核 `CGO_ENABLED=0` 交叉编译 `darwin/amd64` 与 `darwin/arm64`，再 `lipo -create` 合成单个通用
+  Mach-O。tauri 对 `externalBin` 的规则是 `{路径}-{target_triple}`
+  （`tauri_utils::resources::external_binaries`），而 `tauri build --target universal-apple-darwin`
+  **会先分别以 `--target x86_64-apple-darwin` / `--target aarch64-apple-darwin` 编译两次**（实测每次
+  tauri-build 都按该 triple 名校验存在性，缺则 `resource path binaries/nekos-core-<triple> doesn't exist`），
+  最后才用 lipo 合并 app 主程序、并以 `universal-apple-darwin` 名读取 sidecar 装包。
+  所以三个文件名都必须产出：
+  `nekos-core-x86_64-apple-darwin`、`nekos-core-aarch64-apple-darwin`、`nekos-core-universal-apple-darwin`。
+- Rust/app 侧用 `tauri build --target universal-apple-darwin`，构建与产物在
+  `src-tauri/target/universal-apple-darwin/release/`。
+- 前提：Rust 需同时具备两个 std 目标（`rustup target add x86_64-apple-darwin aarch64-apple-darwin`）；
+  Homebrew/MacPorts 版 rust 只能编译 host 目标，需换 rustup 工具链（可私有安装到独立目录，见脚本头部）。
+- 脚本 `./pack-macos.sh` 只做两件事：Go 内核两个切片 + `lipo` 合成通用 sidecar → tauri universal 构建
+  （`--bundles dmg`），然后打印 dmg **绝对路径**。编译前若缺 std 目标会用 `rustup target add` 补装；
+  不代装 node 依赖、不做架构断言、不接受参数，编译之后无任何安装 / 部署动作。
+- 产物路径：`src-tauri/target/universal-apple-darwin/release/bundle/dmg/nekos_<ver>_universal.dmg`。
+  dmg 那步固定以 `CI=true` 调 tauri：tauri-bundler 因此加 `--skip-jenkins`，跳过「挂载临时可写镜像 +
+  AppleScript 打开 Finder 窗口做图标排版」——否则每次打包都会自动弹一个 Finder 窗口；代价是 dmg 内不写
+  图标位置排版（`Applications -> /Applications` 拖拽链接、`.VolumeIcon.icns`、双架构 app 均不受影响）。
+  注意 `--bundles dmg` 出完 dmg 会把中间 `.app` 删掉（tauri 日志 "Cleaning …/nekos.app"），
+  要 `.app` 就从 dmg 里取。
+
+验证记录（2026-09-26，macOS 26.7 / x86_64，macOS 26.7 上交叉编译 arm64 切片）
+- 构建：`cargo check`/`cargo build`、`npm run build`、`cd core && go build -tags with_utls,with_grpc` 全绿。
+- `cargo test --lib`：27 passed（含真机 `networksetup -listallnetworkservices` 服务列表、真 `nekos-core serve`
+  生命周期与 token 鉴权）；两个真机用例默认 `#[ignore]`，需显式 opt-in：
+  - `sysproxy::mac_impl::tests::system_proxy_round_trip`：enable → 读回 → disable → **逐服务按快照还原**，
+    跑完后机器代理配置与跑前一致（已核对 web/secureweb/socksfirewall × 各服务）；
+  - `autostart::mac_impl::tests::launchagent_round_trip`：临时 `HOME` 写 plist + bootstrap + bootout，
+    用 `launchctl print` 双向验证注册状态。
+- 打包冒烟：`./pack.sh` 产出 `nekos.app`；把 .app 复制到 `/tmp`、并把仓库 dev 内核改名掩蔽后启动，
+  实测（strace 等价证据 = 包裹脚本记录 argv）：
+  1. 应用执行 `nekos.app/Contents/MacOS/nekos-core version` → 用的就是包内 sidecar；
+  2. 预置会话（trojan 节点 + `resume_on_launch`）后启动：应用拉起 daemon
+     （`nekos-core serve --rpc …`，ppid = 应用进程），内嵌 sing-box 在 `127.0.0.1:2080` 监听；
+  3. 正常退出（`osascript … quit` → `RunEvent::ExitRequested` → `shutdown_all`）：应用、daemon、端口全部释放；
+  4. `kill -9` 模拟 GUI 崩溃：daemon 靠 stdin EOF 自退，端口释放、无残留 —— 与 Linux 同一保护路径。
+- 通用包冒烟（`./pack-macos.sh` → `nekos_0.1.0_universal.dmg`，36.9MB）：
+  1. 挂载 dmg：包内 `Contents/MacOS/nekos` 与 `nekos-core` 的 `lipo -archs` 均为 `x86_64 arm64`；
+  2. 从 dmg 拷出 .app、掩蔽仓库 dev 内核后运行：应用拉起的核心进程路径在包内，
+     对运行中的该二进制 `lipo -archs` 仍为 `x86_64 arm64`；sing-box 入站 `127.0.0.1:2080`；
+     预置真节点（订阅实测最快 308ms 的 trojan）后 HTTP 与 SOCKS5 双协议 `generate_204` 均 204
+     （0.79s / 0.81s）；退出后进程与端口全部释放。
+  3. 限制：本机是 Intel，arm64 切片只能做结构与 `lipo` 校验（Mach-O `ARM64 EXECUTE PIE` 头），
+     无法执行 —— Apple Silicon 真机运行需另行验证。
+
 ## 9. 安全与合规
 - RPC 只绑 127.0.0.1 + token；配置/日志落盘 0600；日志脱敏（password/token 打码）。
 - 订阅抓取走编排层（可配 UA/自定义头），内容只送 parser。
 - **许可证**：本项目按 GPL-3.0 发布（Go 静态链接 sing-box 后整体受其许可证约束；参考实现 nekobox 亦 GPL-3.0）。复用参考仓库代码前须核对各自版权头；本文档只借架构思想，不直接搬运代码。
 
-## 10. 关键外部事实（含核实时间，2026-09-06）
-- sing-box 最新稳定 v1.14.0；tags 显示 v1.15.0-alpha.2 已存在 → 升级节奏：每个稳定版发版后一周内 bump。
+## 10. 关键外部事实（各条含核实时间；最新章节核实 2026-09-26）
+- sing-box 最新稳定 v1.14.2（发布于 2026-09-24；2026-09-26 落地 bump，go.mod v1.14.0 → v1.14.2，连带
+  sing / sing-quic / sing-tun / sing-mux / wireguard-go / tailscale 等上游 patch 级更新）；最新预发布
+  v1.15.0-alpha.8，按既定节奏不采用预发布 → 每个稳定版发版后一周内 bump。
+  bump 后回归（2026-09-26，macOS 26.7）：`go test ./...` 全绿；真订阅 204 节点解析（vless/trojan）；
+  204 节点批量测速 48 个存活（最快 311ms）；混合入站 127.0.0.1:2080 上 HTTP 与 SOCKS5 双协议
+  `generate_204` 均 204。
 - nekobox(qr243vbi) = NyameBox：Qt/C++ GUI + nekobox_core(Go)；FAQ 证实"TUN 模式 UAC 重启 nekobox_core"进程模型；TODO 承认其存储/UI 建模仍在重构 → 我们不必照抄其内部。
 - v2rayN 结构：`ServiceLib`(Models/Handler/Services/Manager/Helper/Enums/ViewModels) 纯逻辑层 + `v2rayN.Desktop` UI —— 分层思想借鉴：逻辑与壳分离。
