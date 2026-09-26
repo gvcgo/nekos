@@ -131,4 +131,5 @@ args+=(--bundles "${bundles[@]}")
 npx tauri build --ci "${args[@]}"
 
 log "完成。产物:"
-find src-tauri/target/release/bundle -maxdepth 2 -type f 2>/dev/null | sed 's/^/  /'
+# `.app` 是目录（macOS），dmg/deb/rpm/AppImage/nsis 是文件 —— 两者都要列。
+find src-tauri/target/release/bundle -maxdepth 2 \( -type f -o -name '*.app' \) 2>/dev/null | sed 's/^/  /'
