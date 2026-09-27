@@ -69,6 +69,28 @@ rust_host_triple() {
   if [ -n "$t" ]; then echo "$t"; else triple_of "$(host_os)" "$(host_arch)"; fi
 }
 
+# Env vars pointing at a loopback proxy: a local proxy client that has since
+# exited leaves http_proxy/https_proxy behind, and `go` then fails module
+# downloads instantly with "proxyconnect tcp: connection refused". The core
+# build uses this list to retry with those vars unset. Non-loopback proxies
+# are never touched — they may be the only route to the module proxy.
+loopback_proxy_vars() {
+  local var url host
+  for var in http_proxy https_proxy HTTP_PROXY HTTPS_PROXY; do
+    url="${!var:-}"
+    [ -n "$url" ] || continue
+    host="${url#*://}"
+    host="${host%%/*}"
+    case "$host" in
+      \[::1\]*|\[0:0:0:0:0:0:0:1\]*) printf '%s\n' "$var"; continue ;;
+    esac
+    host="${host%%:*}"
+    case "$host" in
+      127.0.0.1|localhost) printf '%s\n' "$var" ;;
+    esac
+  done
+}
+
 # 编译单个 core sidecar → src-tauri/binaries/nekos-core-<triple>[.exe]
 build_core_sidecar() {
   local os="$1" arch="$2"
@@ -79,9 +101,21 @@ build_core_sidecar() {
 
   mkdir -p src-tauri/binaries
   log "core sidecar: GOOS=$os GOARCH=$arch → ${exe}"
-  (cd core && CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
-    go build -trimpath -ldflags "-s -w" -tags "$GO_TAGS" \
-    -o "../$exe" ./cmd/nekos-core)
+
+  local -a bypass=()
+  local var
+  while IFS= read -r var; do bypass+=(-u "$var"); done < <(loopback_proxy_vars)
+
+  go_build() {
+    ( cd core && env "$@" CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+        go build -trimpath -ldflags "-s -w" -tags "$GO_TAGS" \
+        -o "../$exe" ./cmd/nekos-core )
+  }
+
+  if go_build; then return 0; fi
+  [ "${#bypass[@]}" -gt 0 ] || return 1
+  log "core build failed with a loopback proxy in the env ($(loopback_proxy_vars | paste -sd' ')); retrying with it bypassed"
+  go_build "${bypass[@]}"
 }
 
 build_frontend() {
