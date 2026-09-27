@@ -33,6 +33,10 @@
 - [x] 切节点热更新：已落地=进程内优雅重建——`core.start` 运行中调用即 `Manager.Replace`（毫秒级、可断、坏配置保留旧实例），UI 选中节点即重建切换；selector/clash-api 运行时切换未做（architecture §6.3 备选双轨）[2026-09-08]
 - [x] 全节点批量测速 + 真连接测试（v2rayN 同款语义）：单 sing-box 实例并发测全组 + 进度逐节点流式（`latency:row`）+ 结果落库；单点测速同引擎；瞬态失败自动重试 [2026-09-08]
 - [x] 多订阅分组管理：自动更新（后台定时 + 设置开关）、导入去重（内容哈希 upsert）、userinfo/到期展示已落地 [2026-09-08]
+- [x] 订阅 Lua 插件（`$HOME/.config/nekos/subs/*.lua`，mlua/Lua5.4）：插件产出订阅文本 → 仍由 core 解析入库；
+      Rust 提供 http/json/base64/config/log 原语；插件组与 URL 组统一按设置页「更新间隔」后台定时抓取（插件不自带调度）；
+      示例插件 `plugins/0dy10.lua` 覆盖付费订阅（登录 → 激活订阅 → 拉取 clash 链接，Cookie/Jar 自持）。
+      验证：引擎单测 + mock 站点端到端跑真插件 + 真 core 解析 + UI 桩 IPC 交互 [2026-09-27，见 architecture §11]
 - [ ] 分流三模式（绕过大陆/全局/规则）+ DNS 配置 UI；绕过大陆用内嵌精简直连表起步
   （global/rule/direct 三模式与自定义分流已落地，见 P0「路由设置」；DNS 配置 UI 未做）
 - [x] 记住上次使用的节点：退出时的会话（组 + 选中行）与"内核在运行"落库，下次启动自动恢复该节点；节点已删除/换掉

@@ -21,6 +21,10 @@ pub struct SubscribeOutcome {
     pub content_type: Option<String>,
     pub userinfo: Option<SubUserInfo>,
     pub group_id: Option<i64>,
+    /// `log(...)` lines from a Lua plugin run (plugin-backed fetches only);
+    /// lets the UI show why a scripted subscription behaved the way it did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logs: Option<Vec<String>>,
     #[serde(flatten)]
     pub parsed: ImportResult,
 }

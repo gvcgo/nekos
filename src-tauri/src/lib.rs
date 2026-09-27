@@ -5,6 +5,7 @@
 mod autostart;
 mod core;
 mod db;
+mod plugins;
 mod runtime;
 mod subscribe;
 mod sysproxy;
@@ -1125,6 +1126,34 @@ async fn subscription_edit(
     .map_err(|e| e.to_string())?
 }
 
+/// Bind a Lua plugin to a group — or clear the binding by passing an
+/// empty/absent plugin — and return the updated group. Plugin source and URL
+/// source are separate operations on purpose: a plugin-backed group has no
+/// `sub_url`, an URL group has no plugin. Refreshes follow the global
+/// auto-update interval, so there is nothing else to store here.
+#[tauri::command]
+async fn subscription_set_plugin(
+    state: State<'_, AppState>,
+    group_id: i64,
+    plugin: Option<String>,
+) -> Result<db::Group, String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+        let plugin = plugin
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty());
+        db.update_group_plugin(group_id, plugin)
+            .map_err(|e| e.to_string())?;
+        db.group(group_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "分组不存在".to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// RAII guard preventing concurrent refreshes of the same group.
 struct RefreshGuard {
     updating: Arc<Mutex<std::collections::HashSet<i64>>>,
@@ -1178,9 +1207,19 @@ impl Drop for RefreshGuard {
     }
 }
 
-/// Re-fetch a subscription group using its saved URL + headers and replace
-/// the group's nodes. Shared by the manual refresh command and the
-/// background auto-update loop.
+/// How a subscription group's body is obtained, read under the DB lock.
+struct SubSource {
+    /// Plain URL fetch target; empty for plugin-backed groups.
+    url: String,
+    /// Lua plugin file when the group is plugin-backed.
+    plugin: Option<String>,
+    headers: HashMap<String, String>,
+}
+
+/// Re-fetch a subscription group and replace the group's nodes. Shared by
+/// the manual refresh command and the background auto-update loop. A group
+/// bound to a Lua plugin runs the plugin; otherwise its saved URL + headers
+/// are fetched.
 async fn refresh_subscription_group(
     db: Arc<Mutex<Db>>,
     ctl: CoreCtl,
@@ -1193,13 +1232,17 @@ async fn refresh_subscription_group(
     let db_read = db.clone();
     let db_write = db.clone();
 
-    let (url, headers) = tauri::async_runtime::spawn_blocking(move || -> Result<(String, HashMap<String, String>), String> {
+    let src = tauri::async_runtime::spawn_blocking(move || -> Result<SubSource, String> {
         let db = db_read.lock().map_err(|_| "db lock poisoned".to_string())?;
         let g = db
             .group(group_id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "分组不存在".to_string())?;
-        let url = g.sub_url.ok_or_else(|| "该分组不是订阅组（没有订阅 URL）".to_string())?;
+        let plugin = g.sub_plugin.filter(|p| !p.trim().is_empty());
+        let url = g.sub_url.unwrap_or_default();
+        if plugin.is_none() && url.trim().is_empty() {
+            return Err("group is not a subscription (no URL and no Lua plugin)".to_string());
+        }
         let mut headers: HashMap<String, String> = HashMap::new();
         if let Some(ua) = g.user_agent.filter(|v| !v.is_empty()) {
             headers.insert("User-Agent".into(), ua);
@@ -1209,13 +1252,30 @@ async fn refresh_subscription_group(
                 headers.extend(map);
             }
         }
-        Ok((url, headers))
+        Ok(SubSource { url, plugin, headers })
     })
     .await
     .map_err(|e| e.to_string())??;
 
-    let (body, content_type, userinfo) = fetch_subscribe(&client, &url, &headers).await?;
-    let text = String::from_utf8_lossy(&body).into_owned();
+    let SubSource { url, plugin, headers } = src;
+    let source = match &plugin {
+        Some(file) => format!("lua:{file}"),
+        None => url.clone(),
+    };
+    let (text, content_type, userinfo, logs) = if let Some(file) = plugin {
+        let out = tauri::async_runtime::spawn_blocking(move || plugins::run(&file))
+            .await
+            .map_err(|e| format!("plugin task failed: {e}"))??;
+        (out.body, out.content_type, None, Some(out.logs))
+    } else {
+        let (body, content_type, userinfo) = fetch_subscribe(&client, &url, &headers).await?;
+        (
+            String::from_utf8_lossy(&body).into_owned(),
+            content_type,
+            userinfo,
+            None,
+        )
+    };
     let parsed = tauri::async_runtime::spawn_blocking(move || ctl.parse(&text))
         .await
         .map_err(|e| format!("parse task failed: {e}"))??;
@@ -1254,12 +1314,19 @@ async fn refresh_subscription_group(
         db.replace_group_nodes(group_id, &nodes)
             .map_err(|e| e.to_string())?;
         let current = db.group(group_id).map_err(|e| e.to_string())?;
+        // A plugin cannot report traffic quotas: keep whatever the previous
+        // URL fetch stored instead of wiping the UI's quota display.
+        let userinfo = userinfo_json.or_else(|| {
+            current
+                .as_ref()
+                .and_then(|g| g.sub_userinfo.as_deref().map(str::to_string))
+        });
         db.update_group_submeta(
             group_id,
             current.as_ref().and_then(|g| g.sub_url.as_deref()),
             current.as_ref().and_then(|g| g.user_agent.as_deref()),
             current.as_ref().and_then(|g| g.extra_headers.as_deref()),
-            userinfo_json.as_deref(),
+            userinfo.as_deref(),
         )
         .map_err(|e| e.to_string())
     })
@@ -1267,10 +1334,11 @@ async fn refresh_subscription_group(
     .map_err(|e| e.to_string())??;
 
     Ok(subscribe::SubscribeOutcome {
-        url,
+        url: source,
         content_type,
         userinfo,
         group_id: Some(group_id),
+        logs,
         parsed: ImportResult { nodes: kept, errors: parsed.errors },
     })
 }
@@ -1302,6 +1370,7 @@ fn unix_now_secs() -> String {
 
 /// Background loop: every minute refresh subscriptions whose last successful
 /// update is older than the configured interval (when auto-update is on).
+/// Plugin-backed groups are scheduled by the same global interval.
 async fn auto_update_loop(state: AppState) {
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
@@ -1319,7 +1388,7 @@ async fn auto_update_loop(state: AppState) {
             match db.list_groups() {
                 Ok(groups) => groups
                     .into_iter()
-                    .filter(|g| g.sub_url.is_some())
+                    .filter(|g| g.sub_url.is_some() || g.sub_plugin.is_some())
                     .filter(|g| {
                         let last = u64::try_from(g.last_update_epoch.unwrap_or(0)).unwrap_or(0);
                         now.saturating_sub(last) >= interval_secs
@@ -1570,6 +1639,103 @@ mod session_tests {
         }
         ctl.core_stop().expect("core stop");
         ctl.shutdown();
+    }
+}
+
+/// The plugin contract the orchestrator relies on: whatever a plugin returns
+/// is handed to the core parser unchanged, and a plugin group's binding
+/// survives the DB round trip the refresh/auto-update paths read.
+#[cfg(test)]
+mod plugin_tests {
+    use super::*;
+
+    fn tmp_dir(tag: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "nekos-plugin-test-{tag}-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn tmp_db() -> Db {
+        let dir = tmp_dir("db");
+        Db::open(&dir.join("test.db")).unwrap()
+    }
+
+    /// A plugin returning clash YAML (what the paid-subscription plugin
+    /// produces) must parse into nodes through the real core daemon.
+    #[test]
+    fn plugin_output_is_parsed_by_the_core() {
+        let _g = crate::runtime::daemon_test_lock();
+        let dir = tmp_dir("parse");
+        std::fs::write(
+            dir.join("fixture.lua"),
+            r#"
+            return {
+              name = "fixture",
+              fetch = function()
+                return [[proxies:
+  - name: "HKG-1"
+    type: trojan
+    server: hk1.example.com
+    port: 443
+    password: pw
+    skip-cert-verify: true
+  - name: "JP-1"
+    type: vless
+    server: jp1.example.com
+    port: 443
+    uuid: e0c664d9-415f-30b5-aeaf-547be3870274
+    tls: true
+]]
+              end,
+            }
+            "#,
+        )
+        .unwrap();
+
+        let out = plugins::run_in(&dir, "fixture.lua", plugins::RUN_DEADLINE).unwrap();
+        let parsed = CoreCtl::new().parse(&out.body).expect("core parse");
+        assert!(
+            parsed.errors.is_empty(),
+            "{}",
+            parsed
+                .errors
+                .iter()
+                .map(|e| e.reason.as_str())
+                .collect::<Vec<_>>()
+                .join("; ")
+        );
+        assert_eq!(
+            parsed.nodes.iter().map(|n| n.r#type.as_str()).collect::<Vec<_>>(),
+            vec!["trojan", "vless"]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Groups bound to a plugin keep sub_plugin and are selected by the same
+    /// filters the refresh paths use.
+    #[test]
+    fn plugin_binding_round_trips_through_the_db() {
+        let db = tmp_db();
+        let gid = db.create_group("paid", None).unwrap();
+        db.update_group_plugin(gid, Some("0dy10.lua")).unwrap();
+
+        let g = db.group(gid).unwrap().unwrap();
+        assert_eq!(g.sub_plugin.as_deref(), Some("0dy10.lua"));
+        assert!(g.sub_url.is_none(), "plugin groups carry no URL");
+
+        let listed = db.list_groups().unwrap();
+        let listed = listed.iter().find(|g| g.id == gid).unwrap();
+        assert_eq!(listed.sub_plugin.as_deref(), Some("0dy10.lua"));
+
+        // binding cleared → neither refresh nor auto-update picks it up
+        db.update_group_plugin(gid, None).unwrap();
+        assert!(db.group(gid).unwrap().unwrap().sub_plugin.is_none());
     }
 }
 
@@ -1888,6 +2054,164 @@ async fn core_stop(state: State<'_, AppState>) -> Result<CoreStatusView, String>
 
 // ---- subscription -------------------------------------------------------
 
+/// Parse result → persisted node rows.
+fn new_nodes(kept: &[core::NodeMeta]) -> Vec<NewNode> {
+    kept.iter()
+        .map(|n| NewNode {
+            id: n.id.clone(),
+            r#type: n.r#type.clone(),
+            remark: n.remark.clone(),
+            out: n.out.to_string(),
+        })
+        .collect()
+}
+
+/// Everything the first fetch of a subscription stores alongside its nodes.
+struct NewSubscription {
+    name: String,
+    /// Plain URL subscription; `None` for plugin-backed groups.
+    url: Option<String>,
+    user_agent: Option<String>,
+    extra_headers_json: Option<String>,
+    userinfo_json: Option<String>,
+    /// Plugin file for plugin-backed groups.
+    plugin: Option<String>,
+    nodes: Vec<NewNode>,
+}
+
+/// Persist a freshly fetched subscription as a new group. Exactly one of
+/// `url` (plain URL subscription) / `plugin` (Lua plugin subscription) is set.
+async fn persist_new_subscription(
+    db: Arc<Mutex<Db>>,
+    sub: NewSubscription,
+) -> Result<i64, String> {
+    let NewSubscription {
+        name,
+        url,
+        user_agent,
+        extra_headers_json,
+        userinfo_json,
+        plugin,
+        nodes,
+    } = sub;
+    tauri::async_runtime::spawn_blocking(move || -> Result<i64, String> {
+        let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+        let gid = db
+            .create_group(&name, url.as_deref())
+            .map_err(|e| e.to_string())?;
+        db.upsert_nodes(gid, &nodes).map_err(|e| e.to_string())?;
+        db.update_group_submeta(
+            gid,
+            url.as_deref(),
+            user_agent.as_deref(),
+            extra_headers_json.as_deref(),
+            userinfo_json.as_deref(),
+        )
+        .map_err(|e| e.to_string())?;
+        if let Some(file) = plugin {
+            db.update_group_plugin(gid, Some(&file))
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(gid)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Run a subscription plugin off the async runtime (blocking HTTP + Lua).
+async fn run_plugin(file: String) -> Result<plugins::PluginOutput, String> {
+    tauri::async_runtime::spawn_blocking(move || plugins::run(&file))
+        .await
+        .map_err(|e| format!("plugin task failed: {e}"))?
+}
+
+/// Installed Lua subscription plugins. Listing also (re)creates the plugin
+/// dir, seeding the bundled example on first run.
+#[tauri::command]
+async fn plugins_list() -> Result<Vec<plugins::PluginInfo>, String> {
+    tauri::async_runtime::spawn_blocking(plugins::list)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// A plugin's `<file>.json` config as JSON text (`{}` when unset).
+#[tauri::command]
+async fn plugin_config_get(file: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || plugins::config_json(&file))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Replace a plugin's config (JSON object) and return the saved text.
+#[tauri::command]
+async fn plugin_config_set(file: String, json: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || plugins::set_config_json(&file, &json))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Fetch a subscription through a Lua plugin, parse it in the core process
+/// and (optionally) save it as a new plugin-backed group. Mirrors
+/// `subscribe`, with the plugin supplying the body instead of an HTTP GET.
+#[tauri::command]
+async fn subscribe_plugin(
+    state: State<'_, AppState>,
+    file: String,
+    save_name: Option<String>,
+) -> Result<subscribe::SubscribeOutcome, String> {
+    let out = run_plugin(file.clone()).await?;
+    let ctl = state.ctl.clone();
+    let text = out.body;
+    let parsed = tauri::async_runtime::spawn_blocking(move || ctl.parse(&text))
+        .await
+        .map_err(|e| format!("parse task failed: {e}"))??;
+
+    if save_name.is_some() && parsed.nodes.is_empty() {
+        let detail = parsed
+            .errors
+            .first()
+            .map(|e| e.reason.as_str())
+            .unwrap_or("未知原因");
+        return Err(format!(
+            "plugin \"{file}\" produced no nodes ({} errors), no subscription created: {detail}",
+            parsed.errors.len()
+        ));
+    }
+
+    let kept = filter_nodes(&parsed.nodes, state.settings().filter_ipv6);
+    if kept.is_empty() && !parsed.nodes.is_empty() && save_name.is_some() {
+        return Err("\"Filter IPv6 nodes\" is on: the plugin output has no usable node, no subscription created".into());
+    }
+
+    let group_id = match save_name {
+        Some(name) => Some(
+            persist_new_subscription(
+                state.db.clone(),
+                NewSubscription {
+                    name,
+                    url: None,
+                    user_agent: None,
+                    extra_headers_json: None,
+                    userinfo_json: None,
+                    plugin: Some(file.clone()),
+                    nodes: new_nodes(&kept),
+                },
+            )
+            .await?,
+        ),
+        None => None,
+    };
+
+    Ok(SubscribeOutcome {
+        url: format!("lua:{file}"),
+        content_type: out.content_type,
+        userinfo: None,
+        group_id,
+        logs: Some(out.logs),
+        parsed: ImportResult { nodes: kept, errors: parsed.errors },
+    })
+}
+
 #[tauri::command]
 async fn subscribe(
     state: State<'_, AppState>,
@@ -1922,57 +2246,36 @@ async fn subscribe(
         return Err("「过滤 IPv6 节点」已开启：该订阅没有可用节点，未创建订阅".into());
     }
 
-    let group_id = if let Some(name) = save_name {
-        let db = state.db.clone();
-        let (nodes, userinfo_json) = {
-            let nodes: Vec<NewNode> = kept
-                .iter()
-                .map(|n| NewNode {
-                    id: n.id.clone(),
-                    r#type: n.r#type.clone(),
-                    remark: n.remark.clone(),
-                    out: n.out.to_string(),
-                })
-                .collect();
-            let ui = userinfo
+    let group_id = match save_name {
+        Some(name) => {
+            // split UA out of the header map for the dedicated column
+            let mut extras = headers.clone();
+            let ua = extras.remove("User-Agent").filter(|v| !v.trim().is_empty());
+            let extras_json = if extras.is_empty() {
+                None
+            } else {
+                Some(serde_json::to_string(&extras).unwrap_or_default())
+            };
+            let userinfo_json = userinfo
                 .as_ref()
                 .map(|u| serde_json::to_string(u).unwrap_or_default());
-            (nodes, ui)
-        };
-        // split UA out of the header map for the dedicated column
-        let mut extras = headers.clone();
-        let ua = extras.remove("User-Agent").filter(|v| !v.trim().is_empty());
-        let extras_json = if extras.is_empty() {
-            None
-        } else {
-            Some(serde_json::to_string(&extras).unwrap_or_default())
-        };
-        let url_for_db = url.clone();
-        let ua2 = ua.clone();
-        let extras_json2 = extras_json.clone();
-        let userinfo_json2 = userinfo_json.clone();
-        Some(
-            tauri::async_runtime::spawn_blocking(move || -> Result<i64, String> {
-                let db = db.lock().map_err(|_| "db lock poisoned".to_string())?;
-                let gid = db
-                    .create_group(&name, Some(&url_for_db))
-                    .map_err(|e| e.to_string())?;
-                db.upsert_nodes(gid, &nodes).map_err(|e| e.to_string())?;
-                db.update_group_submeta(
-                    gid,
-                    Some(&url_for_db),
-                    ua2.as_deref(),
-                    extras_json2.as_deref(),
-                    userinfo_json2.as_deref(),
+            Some(
+                persist_new_subscription(
+                    state.db.clone(),
+                    NewSubscription {
+                        name,
+                        url: Some(url.clone()),
+                        user_agent: ua,
+                        extra_headers_json: extras_json,
+                        userinfo_json,
+                        plugin: None,
+                        nodes: new_nodes(&kept),
+                    },
                 )
-                .map_err(|e| e.to_string())?;
-                Ok(gid)
-            })
-            .await
-            .map_err(|e| e.to_string())??,
-        )
-    } else {
-        None
+                .await?,
+            )
+        }
+        None => None,
     };
 
     Ok(SubscribeOutcome {
@@ -1980,6 +2283,7 @@ async fn subscribe(
         content_type,
         userinfo,
         group_id,
+        logs: None,
         parsed: ImportResult { nodes: kept, errors: parsed.errors },
     })
 }
@@ -2091,6 +2395,13 @@ pub fn run() {
             // subscription auto-refresh scheduler (runs while the app lives)
             tauri::async_runtime::spawn(auto_update_loop(app_state.clone()));
 
+            // Subscription plugin dir (`$HOME/.config/nekos/subs`): created at
+            // launch and seeded with the bundled example on first run, so the
+            // UI always has something to point at.
+            if let Err(e) = plugins::ensure_dir() {
+                eprintln!("plugins: {e}");
+            }
+
             // Apply persisted desktop-integration settings at launch
             // (best effort: failures are logged, not fatal).
             if app_state.settings().auto_start {
@@ -2154,7 +2465,12 @@ pub fn run() {
             core_version,
             parse_text,
             subscribe,
+            subscribe_plugin,
+            plugins_list,
+            plugin_config_get,
+            plugin_config_set,
             subscription_edit,
+            subscription_set_plugin,
             subscription_refresh,
             groups_list,
             nodes_list,

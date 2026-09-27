@@ -29,6 +29,10 @@ parking_lot = "0.12"
 tokio = { version = "1", features = ["time"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 tauri-plugin-clipboard-manager = "2.3.3"
+# Subscription Lua plugins ($HOME/.config/nekos/subs/*.lua). Lua 5.4 is built
+# from source (lua-src) so no system Lua is needed; the engine only supplies
+# HTTP/JSON/base64/config primitives (plugins bring no native code).
+mlua = { version = "0.10", features = ["lua54", "vendored"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Used by src/tray_linux.rs to connect the libappindicator `activate` signal

@@ -6,12 +6,19 @@ import {
   deleteGroup,
   groupsList,
   nodesList,
+  pluginConfigGet,
+  pluginConfigSet,
+  pluginsList,
+  renameGroup,
   settingsGet,
   subscribe,
+  subscribePlugin,
   subscriptionEdit,
   subscriptionRefresh,
+  subscriptionSetPlugin,
   type Group,
   type Node,
+  type PluginInfo,
   type SubUserInfo,
   type SubscribeResult,
 } from "../api";
@@ -96,6 +103,22 @@ const zhL = {
   subCreated: "已创建订阅「{name}」（{n} 节点）",
   subRefreshed: "「{name}」已更新：{n} 节点，{m} 错误",
   newSubDefault: "新订阅",
+  // Subscription-plugin labels/hints (UI text lives in both locales; the
+  // plugin's own log/error messages are English, see architecture.md §11).
+  modeUrl: "URL 订阅",
+  modePlugin: "Lua 插件",
+  pluginPick: "插件",
+  pluginRescan: "重新扫描插件目录",
+  pluginRun: "运行插件",
+  pluginRunning: "运行中…",
+  pluginConfig: "插件配置 (JSON)：凭据 / 链接等",
+  pluginConfigSave: "保存配置",
+  pluginConfigSaved: "配置已保存",
+  pluginEmpty: "插件目录里没有 .lua：把插件放到 $HOME/.config/nekos/subs/ 后点「重新扫描插件目录」",
+  pluginBroken: "插件加载失败",
+  pluginLogs: "插件日志",
+  pluginDir: "插件目录：$HOME/.config/nekos/subs",
+  pluginGroupTag: "插件",
 } as const;
 type DictKeys = keyof typeof zhL;
 const enL: Record<DictKeys, string> = {
@@ -177,6 +200,20 @@ const enL: Record<DictKeys, string> = {
   subCreated: "Created subscription “{name}” ({n} nodes)",
   subRefreshed: "“{name}” updated: {n} nodes, {m} errors",
   newSubDefault: "New subscription",
+  modeUrl: "URL subscription",
+  modePlugin: "Lua plugin",
+  pluginPick: "Plugin",
+  pluginRescan: "Rescan plugin dir",
+  pluginRun: "Run plugin",
+  pluginRunning: "Running…",
+  pluginConfig: "Plugin config (JSON): credentials / links",
+  pluginConfigSave: "Save config",
+  pluginConfigSaved: "Config saved",
+  pluginEmpty: "No .lua in the plugin dir — drop a plugin into $HOME/.config/nekos/subs/ and hit “Rescan plugin dir”",
+  pluginBroken: "Plugin failed to load",
+  pluginLogs: "Plugin logs",
+  pluginDir: "Plugin dir: $HOME/.config/nekos/subs",
+  pluginGroupTag: "plugin",
 };
 const dict = useDict({ zh: zhL as Dict, en: enL });
 function tt(k: DictKeys, p?: Record<string, string | number>): string {
@@ -192,10 +229,21 @@ const allGroups = ref<Group[]>([]);
 const refreshing = ref<Record<number, boolean>>({});
 const err = ref("");
 const msg = ref("");
+/** `log(...)` lines of the last plugin run (preview or refresh). */
+const pluginLogs = ref<string[]>([]);
 
 const subscriptions = computed(() =>
-  subs.value.filter((g) => (g.sub_url ?? "").trim().length > 0),
+  subs.value.filter(
+    (g) =>
+      (g.sub_url ?? "").trim().length > 0 || (g.sub_plugin ?? "").trim().length > 0,
+  ),
 );
+
+/** Display source of a subscription group: URL or `lua:<file>`. */
+function subSource(g: Group): string {
+  const plugin = (g.sub_plugin ?? "").trim();
+  return plugin ? `lua:${plugin}` : g.sub_url ?? "";
+}
 
 async function loadSubs() {
   subs.value = await groupsList();
@@ -490,6 +538,7 @@ async function refreshSub(g: Group) {
   try {
     const out: SubscribeResult = await subscriptionRefresh(g.id);
     msg.value = tt("subRefreshed", { name: g.name, n: out.nodes.length, m: out.errors.length });
+    pluginLogs.value = out.logs ?? [];
     await loadSubs();
   } catch (e) {
     err.value = String(e);
@@ -505,6 +554,7 @@ const editName = ref("");
 const editUrl = ref("");
 const editUA = ref("");
 const editExtrasText = ref("");
+const editPlugin = ref("");
 const savingEdit = ref(false);
 
 function extrasToText(json?: string): string {
@@ -536,6 +586,7 @@ function startEdit(g: Group) {
   editUrl.value = g.sub_url ?? "";
   editUA.value = g.user_agent ?? "";
   editExtrasText.value = extrasToText(g.extra_headers);
+  editPlugin.value = g.sub_plugin ?? "";
   err.value = "";
 }
 
@@ -549,13 +600,19 @@ async function saveEdit() {
   err.value = "";
   msg.value = "";
   try {
-    await subscriptionEdit(
-      editingId.value,
-      editName.value.trim(),
-      editUrl.value.trim(),
-      editUA.value,
-      extrasToJson(editExtrasText.value),
-    );
+    if (editPlugin.value.trim()) {
+      // plugin-backed group: name + plugin interval (no URL/UA/headers)
+      if (editName.value.trim()) await renameGroup(editingId.value, editName.value.trim());
+      await subscriptionSetPlugin(editingId.value, editPlugin.value.trim());
+    } else {
+      await subscriptionEdit(
+        editingId.value,
+        editName.value.trim(),
+        editUrl.value.trim(),
+        editUA.value,
+        extrasToJson(editExtrasText.value),
+      );
+    }
     msg.value = tt("editSaved");
     await loadSubs();
   } catch (e) {
@@ -573,6 +630,100 @@ const extraHeaders = ref("");
 const saveName = ref("");
 const fetchBusy = ref(false);
 const preview = ref<SubscribeResult | null>(null);
+
+// ---- new subscription via Lua plugin ----
+
+const mode = ref<"url" | "plugin">("url");
+const plugins = ref<PluginInfo[]>([]);
+const pluginFile = ref("");
+const pluginConfig = ref("");
+const pluginConfigBusy = ref(false);
+const pluginConfigSaved = ref(false);
+
+const selectedPlugin = computed(
+  () => plugins.value.find((p) => p.file === pluginFile.value) ?? null,
+);
+
+async function loadPlugins() {
+  try {
+    plugins.value = await pluginsList();
+  } catch (e) {
+    err.value = String(e);
+    return;
+  }
+  if (!plugins.value.some((p) => p.file === pluginFile.value)) {
+    pluginFile.value = plugins.value.find((p) => !p.error)?.file ?? plugins.value[0]?.file ?? "";
+  }
+  await loadPluginConfig();
+}
+
+async function loadPluginConfig() {
+  pluginConfigSaved.value = false;
+  pluginLogs.value = [];
+  preview.value = null;
+  if (!pluginFile.value) {
+    pluginConfig.value = "";
+    return;
+  }
+  try {
+    pluginConfig.value = await pluginConfigGet(pluginFile.value);
+  } catch (e) {
+    pluginConfig.value = "";
+    err.value = String(e);
+  }
+}
+
+async function savePluginConfig() {
+  if (!pluginFile.value) return;
+  pluginConfigBusy.value = true;
+  err.value = "";
+  try {
+    pluginConfig.value = await pluginConfigSet(pluginFile.value, pluginConfig.value);
+    pluginConfigSaved.value = true;
+  } catch (e) {
+    err.value = String(e);
+  } finally {
+    pluginConfigBusy.value = false;
+  }
+}
+
+/** Dry run: fetch + parse, no group yet (mirrors doFetch for URL mode). */
+async function doRunPlugin() {
+  fetchBusy.value = true;
+  err.value = "";
+  preview.value = null;
+  pluginLogs.value = [];
+  try {
+    const out = await subscribePlugin(pluginFile.value);
+    preview.value = out;
+    pluginLogs.value = out.logs ?? [];
+    if (!saveName.value.trim()) saveName.value = pluginFile.value.replace(/\.lua$/, "");
+  } catch (e) {
+    err.value = String(e);
+  } finally {
+    fetchBusy.value = false;
+  }
+}
+
+async function doSavePlugin() {
+  fetchBusy.value = true;
+  err.value = "";
+  try {
+    const out = await subscribePlugin(pluginFile.value, saveName.value.trim());
+    if (out.group_id) {
+      msg.value = tt("subCreated", { name: saveName.value.trim(), n: out.nodes.length });
+      preview.value = null;
+      pluginLogs.value = out.logs ?? [];
+      saveName.value = "";
+      await loadSubs();
+      emit("saved", out.group_id);
+    }
+  } catch (e) {
+    err.value = String(e);
+  } finally {
+    fetchBusy.value = false;
+  }
+}
 
 function buildHeaders(): Record<string, string> {
   const headers: Record<string, string> = {};
@@ -643,6 +794,11 @@ async function doSaveNew() {
       <span v-if="err" class="err">{{ err }}</span>
     </div>
 
+    <details v-if="pluginLogs.length" class="plugin-logs">
+      <summary>{{ tt("pluginLogs") }} ({{ pluginLogs.length }})</summary>
+      <pre>{{ pluginLogs.join("\n") }}</pre>
+    </details>
+
     <!-- managed subscription list -->
     <section v-if="subscriptions.length" class="list">
       <table>
@@ -653,7 +809,10 @@ async function doSaveNew() {
           <template v-for="g in subscriptions" :key="g.id">
             <tr>
               <td class="c-name ell" :title="g.name">{{ g.name }}</td>
-              <td class="c-url ell mono" :title="g.sub_url">{{ g.sub_url }}</td>
+              <td class="c-url ell mono" :title="subSource(g)">
+                <span v-if="g.sub_plugin" class="tag">{{ tt("pluginGroupTag") }}</span>
+                {{ subSource(g) }}
+              </td>
               <td class="c-meta ell mono" :title="quotaTooltip(g)">
                 <template v-if="userInfo(g)">
                   {{ fmtBytes((userInfo(g)!.upload || 0) + (userInfo(g)!.download || 0)) }}/{{ fmtBytes(userInfo(g)!.total || 0) }}
@@ -685,12 +844,18 @@ async function doSaveNew() {
                   <div class="grid">
                     <label>{{ tt("name") }}</label>
                     <input v-model="editName" class="inp" />
-                    <label>{{ tt("subUrl") }}</label>
-                    <input v-model="editUrl" class="inp mono" :placeholder="tt('editUrlPh')" />
-                    <label>{{ tt("userAgent") }}</label>
-                    <input v-model="editUA" class="inp mono" :placeholder="tt('uaPh')" />
-                    <label>{{ tt("extraHeaders") }}</label>
-                    <textarea v-model="editExtrasText" rows="2" class="inp mono" :placeholder="tt('extrasPh')" />
+                    <template v-if="editPlugin">
+                      <label>{{ tt("pluginPick") }}</label>
+                      <input :value="editPlugin" class="inp mono" disabled />
+                    </template>
+                    <template v-else>
+                      <label>{{ tt("subUrl") }}</label>
+                      <input v-model="editUrl" class="inp mono" :placeholder="tt('editUrlPh')" />
+                      <label>{{ tt("userAgent") }}</label>
+                      <input v-model="editUA" class="inp mono" :placeholder="tt('uaPh')" />
+                      <label>{{ tt("extraHeaders") }}</label>
+                      <textarea v-model="editExtrasText" rows="2" class="inp mono" :placeholder="tt('extrasPh')" />
+                    </template>
                   </div>
                   <div class="btns">
                     <button :disabled="savingEdit" @click="saveEdit">{{ savingEdit ? tt("saving") : tt("saveChanges") }}</button>
@@ -791,24 +956,63 @@ async function doSaveNew() {
 
     <!-- new subscription -->
     <section class="new">
-      <details>
+      <details @toggle="(e: Event) => (e.target as HTMLDetailsElement).open && loadPlugins()">
         <summary>{{ tt("fetchNew") }}</summary>
         <div class="new-form">
-          <div class="row">
-            <input v-model="url" class="inp" :placeholder="tt('subUrlPh')" @keydown.enter="doFetch" />
-            <button :disabled="fetchBusy || !url.trim()" @click="doFetch">{{ fetchBusy ? tt("fetching") : tt("fetchParse") }}</button>
+          <div class="row modes">
+            <button class="ghost mini" :class="{ accent: mode === 'url' }" @click="mode = 'url'">{{ tt("modeUrl") }}</button>
+            <button class="ghost mini" :class="{ accent: mode === 'plugin' }" @click="mode = 'plugin'">{{ tt("modePlugin") }}</button>
           </div>
-          <div class="grid">
-            <label>{{ tt("userAgent") }}</label>
-            <input v-model="ua" class="inp mono" :placeholder="tt('uaExamplePh')" />
-            <label>{{ tt("extraHeaders") }}</label>
-            <textarea v-model="extraHeaders" rows="2" class="inp mono" :placeholder="tt('headersPh')" />
-          </div>
-          <div v-if="preview" class="preview">
-            <span>{{ tt("parseSummary", { n: preview.nodes.length, m: preview.errors.length }) }}</span>
-            <input v-model="saveName" class="inp mono" :placeholder="tt('newGroupNamePh')" />
-            <button :disabled="!saveName.trim()" @click="doSaveNew">{{ tt("saveNewGroup") }}</button>
-          </div>
+
+          <template v-if="mode === 'url'">
+            <div class="row">
+              <input v-model="url" class="inp" :placeholder="tt('subUrlPh')" @keydown.enter="doFetch" />
+              <button :disabled="fetchBusy || !url.trim()" @click="doFetch">{{ fetchBusy ? tt("fetching") : tt("fetchParse") }}</button>
+            </div>
+            <div class="grid">
+              <label>{{ tt("userAgent") }}</label>
+              <input v-model="ua" class="inp mono" :placeholder="tt('uaExamplePh')" />
+              <label>{{ tt("extraHeaders") }}</label>
+              <textarea v-model="extraHeaders" rows="2" class="inp mono" :placeholder="tt('headersPh')" />
+            </div>
+            <div v-if="preview" class="preview">
+              <span>{{ tt("parseSummary", { n: preview.nodes.length, m: preview.errors.length }) }}</span>
+              <input v-model="saveName" class="inp mono" :placeholder="tt('newGroupNamePh')" />
+              <button :disabled="!saveName.trim()" @click="doSaveNew">{{ tt("saveNewGroup") }}</button>
+            </div>
+          </template>
+
+          <template v-else>
+            <div v-if="!plugins.length" class="hint">{{ tt("pluginEmpty") }}</div>
+            <div class="row">
+              <select v-model="pluginFile" class="inp sel" @change="loadPluginConfig">
+                <option v-for="p in plugins" :key="p.file" :value="p.file" :disabled="!!p.error">
+                  {{ p.name }} ({{ p.file }}){{ p.error ? " ⚠" : "" }}
+                </option>
+              </select>
+              <button class="ghost mini" :title="tt('pluginRescan')" @click="loadPlugins">⟳</button>
+              <button :disabled="fetchBusy || !pluginFile" @click="doRunPlugin">
+                {{ fetchBusy ? tt("pluginRunning") : tt("pluginRun") }}
+              </button>
+            </div>
+            <div v-if="selectedPlugin?.description" class="hint">{{ selectedPlugin.description }}</div>
+            <div v-if="selectedPlugin?.error" class="err">{{ tt("pluginBroken") }}: {{ selectedPlugin.error }}</div>
+            <details v-if="pluginFile" class="cfg">
+              <summary>{{ tt("pluginConfig") }}</summary>
+              <textarea v-model="pluginConfig" rows="6" class="inp mono" />
+              <div class="btns">
+                <button :disabled="pluginConfigBusy" @click="savePluginConfig">{{ tt("pluginConfigSave") }}</button>
+                <span v-if="pluginConfigSaved" class="ok">{{ tt("pluginConfigSaved") }}</span>
+              </div>
+            </details>
+            <div v-if="preview" class="preview">
+              <span>{{ tt("parseSummary", { n: preview.nodes.length, m: preview.errors.length }) }}</span>
+              <input v-model="saveName" class="inp mono" :placeholder="tt('newGroupNamePh')" />
+              <button :disabled="!saveName.trim()" @click="doSavePlugin">{{ tt("saveNewGroup") }}</button>
+            </div>
+            <pre v-if="pluginLogs.length" class="logs">{{ pluginLogs.join("\n") }}</pre>
+            <div class="hint">{{ tt("pluginDir") }}</div>
+          </template>
         </div>
       </details>
     </section>
@@ -821,7 +1025,7 @@ async function doSaveNew() {
 .head h1 { margin: 0 8px 0 0; font-size: 20px; }
 .hint { opacity: 0.6; font-size: 12px; }
 .spacer { flex: 1; }
-.err { color: #ef4444; font-size: 12px; }
+.err { color: #ef4444; font-size: 12px; white-space: pre-line; }
 .ok { color: #22c55e; font-size: 12px; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th, td { text-align: start; padding: 7px 8px; border-top: 1px solid var(--border); }
@@ -900,5 +1104,19 @@ button.mini { padding: 2px 8px; font-size: 12px; margin-left: 4px; }
 }
 .pick { display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; }
 .pick code { font-size: 11px; }
+/* ---- lua subscription plugins ---- */
+.modes { gap: 6px; }
+.tag {
+  display: inline-block; padding: 0 4px; margin-right: 4px; font-size: 10px;
+  border: 1px solid var(--border); border-radius: 4px; opacity: 0.7;
+}
+.cfg summary { cursor: pointer; font-size: 12px; opacity: 0.85; }
+.cfg textarea { margin: 6px 0; }
+.logs, .plugin-logs pre {
+  white-space: pre-wrap; word-break: break-all; margin: 0; padding: 6px 8px;
+  background: rgba(0, 0, 0, 0.04); border: 1px solid var(--border);
+  border-radius: 6px; font-size: 11px; max-height: 180px; overflow: auto;
+}
+.plugin-logs summary { cursor: pointer; font-size: 12px; opacity: 0.8; }
 
 </style>

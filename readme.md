@@ -5,13 +5,15 @@
 > 文档：
 > - [架构与决策记录](docs/architecture.md) — 事实源
 > - [路线图](docs/roadmap.md) — 里程碑与追踪
+> - [订阅 Lua 插件写法](docs/plugins.md) — 插件契约 / API / 排错
 
 ## 仓库布局
 
 ```
 src/            Vue 3 + TS 前端（UI 层）
-src-tauri/      Rust 编排层（存储/系统代理/托盘/core 进程管理）
+src-tauri/      Rust 编排层（存储/系统代理/托盘/core 进程管理/订阅 Lua 插件）
 core/           Go 控制进程（parser / builder / runtime / JSON-RPC）
+plugins/        内置订阅 Lua 插件示例（首次运行时写入 $HOME/.config/nekos/subs/）
 docs/           架构与路线图
 ```
 

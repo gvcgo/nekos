@@ -47,6 +47,8 @@ export interface SubscribeResult extends ImportResult {
   content_type?: string;
   userinfo?: SubUserInfo;
   group_id?: number;
+  /** `log(...)` lines of a Lua plugin run (plugin-backed fetches only). */
+  logs?: string[];
 }
 
 export function subscribe(
@@ -55,6 +57,38 @@ export function subscribe(
   saveName?: string,
 ): Promise<SubscribeResult> {
   return invoke<SubscribeResult>("subscribe", { url, headers, saveName });
+}
+
+// ---- lua subscription plugins ($HOME/.config/nekos/subs/*.lua) -----------
+
+export interface PluginInfo {
+  /** File name inside the plugin dir, e.g. "0dy10.lua". */
+  file: string;
+  name: string;
+  description: string;
+  interval_minutes?: number;
+  /** Load/parse error: listed but not runnable. */
+  error?: string;
+}
+
+/** Installed plugins (also (re)creates the plugin dir). */
+export function pluginsList(): Promise<PluginInfo[]> {
+  return invoke<PluginInfo[]>("plugins_list");
+}
+
+/** A plugin's `<file>.json` config as JSON text (`{}` when unset). */
+export function pluginConfigGet(file: string): Promise<string> {
+  return invoke<string>("plugin_config_get", { file });
+}
+
+/** Replace a plugin's config (JSON object) and return the saved text. */
+export function pluginConfigSet(file: string, json: string): Promise<string> {
+  return invoke<string>("plugin_config_set", { file, json });
+}
+
+/** Run a plugin, parse its output in core, optionally save a plugin group. */
+export function subscribePlugin(file: string, saveName?: string): Promise<SubscribeResult> {
+  return invoke<SubscribeResult>("subscribe_plugin", { file, saveName });
 }
 
 // ---- storage ------------------------------------------------------------
@@ -66,6 +100,8 @@ export interface Group {
   user_agent?: string;
   extra_headers?: string;
   sub_userinfo?: string;
+  /** Lua plugin file when the group is refreshed by a plugin (no sub_url). */
+  sub_plugin?: string;
   updated_at?: string;
   last_update_epoch?: number;
   /** normal | strategy (auto urltest) | strategy-manual */
@@ -88,6 +124,15 @@ export function subscriptionEdit(
     userAgent,
     extraHeadersJson,
   });
+}
+
+/** Bind a Lua plugin to a group, or clear it (null). Refreshes follow the
+ *  global update interval from settings. */
+export function subscriptionSetPlugin(
+  groupId: number,
+  plugin: string | null,
+): Promise<Group> {
+  return invoke<Group>("subscription_set_plugin", { groupId, plugin });
 }
 
 /** Re-fetch with the subscription's saved URL + headers; replaces nodes. */

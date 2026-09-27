@@ -42,6 +42,7 @@
 │  · CoreClient: 拉起/守护/退出 core 子进程；JSON-RPC + 事件    │
 │  · platform: SystemProxy/TUN/自启/托盘 的平台抽象            │
 │  · HTTP: 订阅抓取、规则集/geo 资源下载                        │
+│  · Lua 订阅插件（mlua）：$HOME/.config/nekos/subs/*.lua（§11）│
 ├────────────────────────────────────────────────────────────┤
 │  控制进程  core/ (Go, 内嵌 sing-box v1.14)                   │
 │  · parser: 分享链接/订阅文本 → 归一化 NodeSpec               │
@@ -309,3 +310,42 @@ DNS：P0 采用 sing-box 默认（host 解析走代理出口）加国内域名�
   `generate_204` 均 204。
 - nekobox(qr243vbi) = NyameBox：Qt/C++ GUI + nekobox_core(Go)；FAQ 证实"TUN 模式 UAC 重启 nekobox_core"进程模型；TODO 承认其存储/UI 建模仍在重构 → 我们不必照抄其内部。
 - v2rayN 结构：`ServiceLib`(Models/Handler/Services/Manager/Helper/Enums/ViewModels) 纯逻辑层 + `v2rayN.Desktop` UI —— 分层思想借鉴：逻辑与壳分离。
+
+## 11. 订阅 Lua 插件（2026-09-27）
+
+**动机**：付费/自建订阅常需要「登录 → 激活 → 取 token 链接」这类 URL 订阅表达不了的流程
+（参考实现：`go/src/ldy` 的 0dy10.com 三接口链路）。把这类站点逻辑写成插件，避免为每个站点改内核代码。
+
+**写法详述**：[docs/plugins.md](plugins.md)（契约 / API 参考 / 示例 / 报错对照）。
+
+**放置与契约**：`$HOME/.config/nekos/subs/*.lua`（Windows 用 `%USERPROFILE%`；`NEKOS_SUBS_DIR` 可覆盖，测试用）。
+每个文件是一个 Lua 5.4 模块：
+
+```lua
+local plugin = { name = "0dy10", description = "…" }
+function plugin.fetch(ctx)                       -- ctx = { name, dir, config }
+  return body                                    -- 字符串，或 { body=…, content_type=… }
+end
+return plugin
+```
+
+**边界**（沿用 §2 依赖方向）：插件只**产出订阅文本**，解析仍在 core（`ctl.parse`）——
+URL 订阅与插件订阅共用同一解析入口，插件不接触 sing-box 结构。Rust 侧只提供原语，插件内不写 native 代码：
+`http.request{url,method,headers,body,timeout}`（回 `{status,headers,cookies,body}`；直连 no_proxy，跟随重定向 ≤10 跳，
+单请求超时默认 30s、上限 600s，响应体上限 16MB，传输失败 raise 供 `pcall`）、`json.encode/decode`、
+`base64.encode/decode`、`config.get/all/set`、`log(...)`、`sleep(secs≤30)`。
+`config` 落在同目录 `<stem>.json`（凭据/链接等，含凭据故落盘 0600），UI 可直接编辑；`log` 行随抓取结果返回，UI 折叠展示。
+
+**调度**：插件不自带调度；插件组与 URL 组共用设置页的「自动更新 + 更新间隔」
+（`settings.auto_update_minutes`，下限 5 分钟）。组只记录来源（`groups.sub_plugin`），手动「更新」与后台
+`auto_update_loop` 按组派发：有 `sub_plugin` 就跑插件，否则走 URL 抓取。插件组与 URL 组互斥
+（插件组 `sub_url` 为空，列表显示 `lua:<file>`）。
+
+**防护与限制**：单次运行 120s 墙钟上限（Lua hook 每 5 万指令检查一次，防 `while true` 打死后台线程）；
+插件是本机用户脚本，与 GUI 同权限、**无沙箱**（不要放不可信来源的插件）；不支持插件直接产出节点。
+GUI 无插件目录时首次创建并写入示例 `plugins/0dy10.lua`（登录 → 激活订阅 → 拉取 clash 链接），已存在的目录不覆盖。
+
+**验证（2026-09-27）**：引擎单测（元数据/回调/json/base64/config/超时/文件名穿越）+ 本地 mock 站点端到端跑
+**真示例插件**（校验收到的三次请求顺序为 login→activate_sub→link、Cookie 透传、UA 约束）；
+插件输出经真 core 解析出节点；`sub_plugin` 组往返 DB；UI 用桩 IPC 驱动真实组件验证插件选择/配置保存/
+运行预览/保存为新订阅组的 invoke 参数（订阅组不带独立间隔：统一走设置页的更新间隔）。

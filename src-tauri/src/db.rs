@@ -21,6 +21,11 @@ pub struct Group {
     pub extra_headers: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sub_userinfo: Option<String>,
+    /// Lua plugin file (`0dy10.lua`) when the group is refreshed by a plugin
+    /// in `$HOME/.config/nekos/subs` instead of a plain URL fetch
+    /// (architecture.md §11). Mutually exclusive with `sub_url`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sub_plugin: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
     /// unix seconds of the last successful fetch/refresh.
@@ -234,6 +239,7 @@ impl Db {
         self.ensure_column("groups", "kind", "TEXT")?;
         self.ensure_column("groups", "members", "TEXT")?; // JSON array of group ids (strategy groups)
         self.ensure_column("groups", "host_group", "INTEGER")?; // where the strategy node appears
+        self.ensure_column("groups", "sub_plugin", "TEXT")?; // Lua plugin file (plugin-backed subscription)
         Ok(())
     }
 
@@ -255,7 +261,7 @@ impl Db {
     pub fn list_groups(&self) -> rusqlite::Result<Vec<Group>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, sub_url, user_agent, extra_headers, sub_userinfo, updated_at,
-                    last_update_epoch, kind, members
+                    last_update_epoch, kind, members, sub_plugin
              FROM groups ORDER BY id",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -270,6 +276,7 @@ impl Db {
                 last_update_epoch: row.get(7)?,
                 kind: row.get::<_, Option<String>>(8)?.unwrap_or_else(|| "normal".into()),
                 members: row.get(9)?,
+                sub_plugin: row.get(10)?,
             })
         })?;
         rows.collect()
@@ -351,7 +358,7 @@ impl Db {
     pub fn list_strategies(&self) -> rusqlite::Result<Vec<Group>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, sub_url, user_agent, extra_headers, sub_userinfo, updated_at,
-                    last_update_epoch, kind, members
+                    last_update_epoch, kind, members, sub_plugin
              FROM groups WHERE kind LIKE 'strategy%' ORDER BY id",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -366,6 +373,7 @@ impl Db {
                 last_update_epoch: row.get(7)?,
                 kind: row.get::<_, Option<String>>(8)?.unwrap_or_default(),
                 members: row.get(9)?,
+                sub_plugin: row.get(10)?,
             })
         })?;
         rows.collect()
@@ -429,7 +437,7 @@ impl Db {
         self.conn
             .query_row(
                 "SELECT id, name, sub_url, user_agent, extra_headers, sub_userinfo, updated_at,
-                        last_update_epoch, kind, members
+                        last_update_epoch, kind, members, sub_plugin
                  FROM groups WHERE id = ?1",
                 params![id],
                 |row| {
@@ -444,6 +452,7 @@ impl Db {
                         last_update_epoch: row.get(7)?,
                         kind: row.get::<_, Option<String>>(8)?.unwrap_or_else(|| "normal".into()),
                         members: row.get(9)?,
+                        sub_plugin: row.get(10)?,
                     })
                 },
             )
@@ -467,6 +476,18 @@ impl Db {
              last_update_epoch = CAST(strftime('%s', 'now') AS INTEGER)
              WHERE id = ?1",
             params![id, sub_url, user_agent, extra_headers, userinfo],
+        )?;
+        Ok(())
+    }
+
+    /// Bind a group to a Lua subscription plugin, or clear the binding
+    /// (`None`). URL-fetched groups keep sub_url; the refresh path prefers
+    /// the plugin when both are set. Refreshes are scheduled by the global
+    /// auto-update interval (settings.auto_update_minutes).
+    pub fn update_group_plugin(&self, id: i64, plugin: Option<&str>) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE groups SET sub_plugin = ?2 WHERE id = ?1",
+            params![id, plugin],
         )?;
         Ok(())
     }
