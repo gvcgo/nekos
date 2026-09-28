@@ -13,6 +13,7 @@ import {
   type RouteProfile,
 } from "../api";
 import { fmt, locale } from "../i18n";
+import { confirmDialog } from "../dialog";
 
 const zhL = {
   cardTitle: "路由设置",
@@ -252,7 +253,7 @@ function removeRule(i: number) {
 async function deleteProfile() {
   if (selId.value == null) return;
   const p = profiles.value.find((x) => x.id === selId.value);
-  if (!p || !confirm(tt("delConfirm", { name: p.name }))) return;
+  if (!p || !(await confirmDialog(tt("delConfirm", { name: p.name })))) return;
   try {
     await routeProfileDelete(p.id);
     profiles.value = profiles.value.filter((x) => x.id !== p.id);

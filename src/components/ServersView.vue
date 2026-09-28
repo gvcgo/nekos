@@ -31,6 +31,7 @@ import {
   type Settings,
 } from "../api";
 import { useDict, fmt, type Dict } from "../i18n";
+import { confirmDialog, promptDialog } from "../dialog";
 
 const zhL = {
   titleGroups: "分组",
@@ -533,7 +534,7 @@ function stratIdFrom(n: Node): number {
 
 async function deleteStrategyNode(n: Node) {
   const sid = stratIdFrom(n);
-  if (!sid || !confirm(tt("delStrategyConfirm", { name: n.remark }))) return;
+  if (!sid || !(await confirmDialog(tt("delStrategyConfirm", { name: n.remark })))) return;
   await deleteGroup(sid);
   await reloadNodes();
 }
@@ -598,13 +599,13 @@ async function doJoin() {
 async function removeGroup() {
   const gid = currentGroupId();
   if (gid === 1) return;
-  if (!confirm(tt("delGroupConfirm", { name: currentGroup().name }))) return;
+  if (!(await confirmDialog(tt("delGroupConfirm", { name: currentGroup().name })))) return;
   await deleteGroup(gid);
   await loadAll();
 }
 
 async function newGroup() {
-  const name = prompt(tt("promptNewGroup"), "");
+  const name = await promptDialog(tt("promptNewGroup"));
   if (!name?.trim()) return;
   const g = await createGroup(name.trim());
   await loadAll();
@@ -614,7 +615,7 @@ async function newGroup() {
 async function renameCurrentGroup() {
   const gid = currentGroupId();
   if (gid === 1) return;
-  const name = prompt(tt("promptRename"), currentGroup().name);
+  const name = await promptDialog(tt("promptRename"), currentGroup().name);
   if (!name?.trim()) return;
   await renameGroup(gid, name.trim());
   await loadAll();

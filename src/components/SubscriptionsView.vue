@@ -23,6 +23,7 @@ import {
   type SubscribeResult,
 } from "../api";
 import { useDict, fmt, type Dict } from "../i18n";
+import { confirmDialog } from "../dialog";
 
 const zhL = {
   title: "订阅",
@@ -521,7 +522,7 @@ function fmtBytes(n: number): string {
 }
 
 async function delSub(g: Group) {
-  if (!confirm(tt("delConfirm", { name: g.name }))) return;
+  if (!(await confirmDialog(tt("delConfirm", { name: g.name })))) return;
   err.value = "";
   try {
     await deleteGroup(g.id);

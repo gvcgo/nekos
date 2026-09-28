@@ -1,0 +1,95 @@
+/* Styles for the in-page dialogs rendered by src/dialog.ts. They live outside
+   the Vue SFCs because the dialog DOM is created imperatively — scoped SFC
+   styles would not reach it. Mirrors the .dialog look used by the views. */
+.nekos-dialog-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.nekos-dialog {
+  background: var(--bg, #f5f6f8);
+  color: var(--fg, #1f2329);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  width: min(360px, 92vw);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.nekos-dialog-msg {
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.nekos-dialog-input {
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+}
+
+.nekos-dialog-input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 0;
+  border-color: var(--accent);
+}
+
+.nekos-dialog-btns {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.nekos-dialog-btn {
+  font: inherit;
+  font-size: 13px;
+  padding: 5px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.nekos-dialog-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.nekos-dialog-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.nekos-dialog-ok {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.nekos-dialog-ok:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+@media (prefers-color-scheme: dark) {
+  .nekos-dialog {
+    background: var(--bg-dark, #16181d);
+    color: var(--fg-dark, #e8eaed);
+    border-color: var(--border-dark);
+  }
+
+  .nekos-dialog-input,
+  .nekos-dialog-btn {
+    border-color: var(--border-dark);
+  }
+}

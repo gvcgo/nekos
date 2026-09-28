@@ -17,6 +17,7 @@
 | 控制面 | JSON-RPC 2.0 over 127.0.0.1 随机端口 + token；SSE 事件推送 | §6 |
 | 许可证 | 本项目 GPL-3.0 | sing-box/nekobox/v2rayN 皆 GPL；Go 静态链接使本仓库整体受 GPL 约束（§9） |
 | Linux GUI 抗上游崩溃 | 启动时（webview 之前）强制 `WEBKIT_FORCE_VBLANK_TIMER=1` | WebKitGTK 2.52.6 DisplayLink 除零 → 显示器热插拔时 GUI 被 SIGFPE 打死（实测两次）；§8.1 |
+| 前端对话框 | **禁用** `window.confirm/prompt/alert`，一律用 `src/dialog.ts`（页内模态，需 await） | WKWebView 未实现 JS 脚本对话框：wry 的 UIDelegate 无对应 selector → macOS 上 `confirm()` 恒 `false`、`prompt()` 恒 `null`（实测）；§8.3 |
 
 ## 1. 目标与非目标
 
@@ -295,6 +296,43 @@ DNS：P0 采用 sing-box 默认（host 解析走代理出口）加国内域名�
      （0.79s / 0.81s）；退出后进程与端口全部释放。
   3. 限制：本机是 Intel，arm64 切片只能做结构与 `lipo` 校验（Mach-O `ARM64 EXECUTE PIE` 头），
      无法执行 —— Apple Silicon 真机运行需另行验证。
+
+### 8.3 macOS 桌面壳：WKWebView 没有 JS 脚本对话框（2026-09-28）
+
+现象：macOS dmg 里「所有删除按钮失效」，「分组」的「新建」「改名」也失效；Linux 同一份前端正常。
+
+根因（源码 + 真机实测）：WebKit 的 `window.alert/confirm/prompt` 不是引擎内建 UI，而是要宿主
+`WKUIDelegate` 实现 `webView:runJavaScript{Alert,Confirm}PanelWithMessage:…` /
+`runJavaScriptTextInputPanelWithPrompt:…` 才有弹窗；未实现时 WebKit 走默认分支并立即回调。
+wry 0.55.1 的 macOS delegate（`src/wkwebview/class/wry_web_view_ui_delegate.rs`）只实现
+open panel / download / new-window，**一条脚本对话框 selector 都没有**（全仓 `grep runJavaScript` 无命中）。
+对照实测（本机 WKWebView，无 UIDelegate）：
+
+```
+confirm('boom')  -> Optional(0)      # false
+prompt('name','def') -> Optional(<null>)
+alert('a')       -> 无反应（no-op）
+```
+
+于是 `if (!confirm(…)) return;` 恒早退（所有确认删除）、`prompt(…)` 恒 `null`（分组新建 / 改名）。
+Linux 走 WebKitGTK 的 `script-dialog` 信号，原生实现 → 一直正常，属"只在 macOS 暴露"的差异。
+
+修复：新增 `src/dialog.ts` + `src/dialog.css`，用页内模态实现 `confirmDialog()` / `promptDialog()`
+（Promise，调用点 `await`；Enter 确认、Escape / 取消 / 点遮罩取消、初始值预选中、IME 组合中的
+Enter 不算提交、空名禁用确定）。6 个调用点（分组新建 / 改名 / 分组删除 / 策略组删除 /
+订阅删除 / 路由档案删除）改用它。不用官方 `tauri-plugin-dialog` 的原因：它没有文本输入框，
+「新建 / 改名」仍得自己做模态，索性合成一套、零新依赖。选择 `new Promise(executor)` 而非
+`Promise.withResolvers()`：后者是 ES2024（WKWebView 17.4+ / WebKitGTK 2.44+），会反噬 Linux 老发行版。
+
+验证（2026-09-28，真机 macOS + 真 WebKit）
+- 行为/渲染：esbuild 打包 `dialog.ts`，在 WKWebView 里脚本化点击，22 项断言全绿
+  （OK→true、取消/ Escape / 遮罩→false、Enter→输入值、预选中 `0:9`、空名禁用确定、IME 不误提交）。
+- 端到端：`dist` 经 `http://127.0.0.1` 载入 WKWebView，`documentStart` 注入 `__TAURI_INTERNALS__`
+  stub（命令级假后端），真实点击 UI：新建 → `create_group{name:"new-group"}`；改名 →
+  `rename_group{groupId:9,name:"renamed"}`；策略删除 → `delete_group{groupId:5}`；分组删除
+  取消 → 无调用、确定 → `delete_group{groupId:9}`；订阅删除 → `delete_group{groupId:3}`；
+  路由档案删除 → `route_profile_delete{profileId:7}`。同一页面内 `window.confirm` 仍返回
+  `false`、`window.prompt` 仍返回 `null`，即老代码在该引擎里必然失效的对照。
 
 ## 9. 安全与合规
 - RPC 只绑 127.0.0.1 + token；配置/日志落盘 0600；日志脱敏（password/token 打码）。
