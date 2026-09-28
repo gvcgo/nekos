@@ -162,6 +162,15 @@ args=(--config '{"bundle":{"active":true,"externalBin":["binaries/nekos-core"]}}
 [ -n "${NEKOS_CONFIG_EXTRA:-}" ] && args+=(--config "$NEKOS_CONFIG_EXTRA")
 args+=(--bundles "${bundles[@]}")
 
+# linuxdeploy（tauri 缓存的 1-alpha）自带 binutils 2.35 的 strip，不认现代发行版库（glibc ≥ 2.36、
+# Arch）里的 `.relr.dyn` 段：`Strip call failed` → linuxdeploy exit 1 → 整个 bundle 中止。
+# 这些库在发行版包里已是 strip 过的，跳过 strip 不增体积（AppImage 实测 ~112 MiB）。
+if [ "$OS" = linux ]; then
+  for bundle in "${bundles[@]}"; do
+    if [ "$bundle" = appimage ]; then export NO_STRIP=1; break; fi
+  done
+fi
+
 npx tauri build --ci "${args[@]}"
 
 log "完成。产物:"

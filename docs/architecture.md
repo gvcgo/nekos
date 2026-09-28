@@ -334,6 +334,32 @@ Enter 不算提交、空名禁用确定）。6 个调用点（分组新建 / 改
   路由档案删除 → `route_profile_delete{profileId:7}`。同一页面内 `window.confirm` 仍返回
   `false`、`window.prompt` 仍返回 `null`，即老代码在该引擎里必然失效的对照。
 
+### 8.4 Linux 打包：AppImage 在 Arch/现代 glibc 上失败（2026-09-28）
+
+现象：`./pack.sh`（或 `NEKOS_BUNDLES=appimage`）在 deb/rpm 之外加 appimage 时，cargo 编译完成后
+`failed to run linuxdeploy` 中止，`src-tauri/target/release/bundle/appimage/` 只剩 `.AppDir`、无 AppImage。
+
+根因：tauri 缓存的 `~/.cache/tauri/linuxdeploy-x86_64.AppImage`（1-alpha，2024-07-26 build）**自带
+binutils 2.35 的 `strip`**（`squashfs-root/usr/bin/strip`）。Arch 的库带 `.relr.dyn`（RELR 重定位，
+binutils 2.36+ 才支持），故逐个库报
+`ERROR: Strip call failed: … unknown type [0x13] section '.relr.dyn'`；linuxdeploy 视其为致命错误，
+在 strip 循环中途 exit 1（`--appdir … --plugin gtk --output appimage` 手跑复现，exit=1）。
+
+修复：`pack.sh` 在 bundle 列表含 `appimage` 时 `export NO_STRIP=1`（linuxdeploy 支持该环境变量，
+日志会打 `$NO_STRIP environment variable detected, not stripping binaries`；子进程继承故无需改 tauri）。
+代价可忽略：发行版库本身已 stripped（`readelf -S /usr/lib/libzstd.so.1` 无 `.symtab`），实测产物 112 MiB。
+deb/rpm 不走 linuxdeploy，不受影响；替换 linuxdeploy 为更新版本不被采用 —— upstream 的 AppImage 同样
+内嵌旧 binutils，且需联网下载，而 `NO_STRIP` 离线、确定。
+
+验证（2026-09-28，Arch / x86_64 / rustc 1.97.1）
+- `NEKOS_BUNDLES=appimage ./pack.sh` exit=0，产物 `…/bundle/appimage/nekos_0.1.0_amd64.AppImage`
+  （117721592 B，sha256 `ce1481514…2a1644`）。
+- `--appimage-extract`：`usr/bin/nekos`（ELF PIE）与 `usr/bin/nekos-core`（Go 静态、已 stripped）并列 ——
+  即 §8.2 的 sidecar 布局在 Linux 同样成立。
+- 启动冒烟：AppImage 起 GUI 后子进程为 `/tmp/.mount_nekos_*/usr/bin/nekos-core serve --rpc 127.0.0.1:0 --token …`，
+  内核取自包内（非仓库 dev 路径），sidecar 解析生效；stderr 仅系统侧告警
+  （`libayatana-appindicator is deprecated`、`GStreamer element appsink not found`），不影响启动。
+
 ## 9. 安全与合规
 - RPC 只绑 127.0.0.1 + token；配置/日志落盘 0600；日志脱敏（password/token 打码）。
 - 订阅抓取走编排层（可配 UA/自定义头），内容只送 parser。
